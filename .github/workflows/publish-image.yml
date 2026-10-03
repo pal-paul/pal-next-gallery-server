@@ -106,6 +106,8 @@ jobs:
 
       - name: Create multi-platform manifest
         shell: bash
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.uploader-metadata.outputs.json }}
         run: |
           mapfile -t tag_args < <(jq -r '.tags[] | "--tag", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
           docker buildx imagetools create \
