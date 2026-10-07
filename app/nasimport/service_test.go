@@ -78,6 +78,7 @@ func TestRunLeavesDuplicateUploadFolderUnassigned(t *testing.T) {
 	repository := &recordingRepository{users: []User{
 		{ID: "user-1", UploadFolder: "shared"},
 		{ID: "user-2", UploadFolder: "shared"},
+		{ID: "user-3", UploadFolder: "shared"},
 	}}
 	service, err := New(repository, importDir, mediaDir)
 	if err != nil {
