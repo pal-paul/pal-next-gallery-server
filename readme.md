@@ -51,6 +51,26 @@ For a local source build, run `npm ci && npm run build` in `web` before starting
 the Go server. `ENV_WEB_DIR` defaults to `./web/dist`; the container image builds
 and installs this directory automatically.
 
+### Frontend demo mode
+
+To test the gallery UI without PostgreSQL, accounts, uploads, or the Go API, run:
+
+```bash
+cd web
+npm ci
+npm run dev:demo
+```
+
+Open the URL printed by Vite (normally `http://localhost:5173`). Demo mode skips
+sign-in and loads local sample albums and media. The data covers album details,
+favorites, trash, map markers, photo/video filters, file metadata, and storage
+statistics. Create, edit, reorder, favorite, trash, and restore actions work in
+memory and reset when the page reloads. Sample images and map tiles require an
+internet connection.
+
+Use `npm run dev` with the Go server running on port `8081` when testing real
+authentication, persistence, uploads, or API integration.
+
 Automatic albums are reconciled nightly. Configure `ENV_AUTO_ALBUM_RUN_AT`
 (default `02:00`) and `ENV_AUTO_ALBUM_TIMEZONE` (for example,
 `Europe/Stockholm`) in `.env` to choose the local run time.

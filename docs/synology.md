@@ -9,6 +9,7 @@ account used by Container Manager:
 /volume1/docker/next-gallery-server/postgres
 /volume1/docker/next-gallery-server/backups
 /volume1/media/gallery
+/volume1/media/import
 /volume1/media/tmp
 ```
 
@@ -24,6 +25,16 @@ file. Deploy it as a Container Manager project, or from SSH:
 docker compose -f build/compose.synology.yaml pull
 docker compose -f build/compose.synology.yaml up -d
 ```
+
+The server scans `NAS_IMPORT_PATH` nightly at `ENV_AUTO_ALBUM_RUN_AT`. In a
+single-user installation, place media directly in `/volume1/media/import` or
+any directory below it. In a multi-user installation, place each user's media
+below a top-level directory matching that user's configured `upload_folder`,
+for example `/volume1/media/import/alice/phone/photo.jpg`. Successfully imported
+files are moved into the gallery storage tree and removed from the import tree.
+Files that cannot be imported remain in place for the next run. Metadata
+processing runs before imported media becomes eligible for automatic albums,
+which group media by capture date when that metadata is available.
 
 Images are published for `linux/amd64` and `linux/arm64`. The application image
 includes FFmpeg for later thumbnail and preview processing and runs as a

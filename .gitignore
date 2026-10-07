@@ -10,6 +10,7 @@
 # Go build and test output
 /pal-next-gallery-server
 *.test
+/bin/
 *.out
 coverage.*
 

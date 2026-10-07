@@ -1,13 +1,14 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { KeyRound, LoaderCircle, ShieldCheck } from 'lucide-react'
 import QRCode from 'qrcode'
+import { demoMode } from '../api/apiClient'
 import { authApi, type LoginChallenge, type Session } from '../api/authApi'
 
 type Props = { children: (logout: () => Promise<void>) => ReactNode }
 
 export function AuthGate({ children }: Props) {
-  const [checking, setChecking] = useState(true)
-  const [role, setRole] = useState<Session['role']>()
+  const [checking, setChecking] = useState(!demoMode)
+  const [role, setRole] = useState<Session['role'] | undefined>(demoMode ? 'user' : undefined)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
@@ -17,6 +18,7 @@ export function AuthGate({ children }: Props) {
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
+    if (demoMode) return
     authApi.session().then((session) => setRole(session.role)).catch(() => setRole(undefined)).finally(() => setChecking(false))
   }, [])
 
@@ -62,6 +64,7 @@ export function AuthGate({ children }: Props) {
   }
 
   const logout = async () => {
+    if (demoMode) return
     await authApi.logout()
     setRole(undefined)
     setChallenge(undefined)

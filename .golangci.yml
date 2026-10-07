@@ -1,0 +1,42 @@
+version: "2"
+run:
+  timeout: 5m
+  tests: true
+
+formatters:
+  enable:
+    - gofmt
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - gocritic
+    - gocyclo
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - unused
+
+  settings:
+    gocyclo:
+      min-complexity: 35
+
+  exclusions:
+    generated: lax
+    warn-unused: false
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+      - legacy
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec

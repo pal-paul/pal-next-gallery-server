@@ -62,10 +62,7 @@ func (service *Service) Run(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
-		processed, err := service.ProcessOnce(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			// The job is already marked for retry; the scheduler should keep running.
-		}
+		processed, _ := service.ProcessOnce(ctx)
 		if processed {
 			continue
 		}

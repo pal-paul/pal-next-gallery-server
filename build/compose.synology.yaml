@@ -33,8 +33,6 @@ services:
       ENV_ADMIN_CONFIG: "YES"
       ENV_WEB_DIR: ./web/dist
       ENV_DATABASE_URL: "postgres://<change-me>:<change-me>@postgres:5432/uploader?sslmode=disable"
-      ENV_MEDIA_DIR: /data/medias
-      ENV_TMP_DIR: /data/tmp
       ENV_MAX_UPLOAD_SIZE_BYTES: "107374182400"
       ENV_MAX_PENDING_UPLOAD_BYTES_PER_USER: "107374182400"
       ENV_MAX_STORAGE_BYTES_PER_USER: "1099511627776"
@@ -48,11 +46,15 @@ services:
       ENV_ISSUER: "<change-me>"
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
+      NAS_IMPORT_PATH: /data/import
+      ENV_MEDIA_DIR: /data/gallery
+      ENV_TMP_DIR: /data/tmp
     ports:
       - "8013:8081"
     volumes:
-      - /volume1/media/gallery:/data/medias
+      - /volume1/media/gallery:/data/gallery
       - /volume1/media/tmp:/data/tmp
+      - /volume1/media/import:/data/import
     depends_on:
       postgres:
         condition: service_healthy

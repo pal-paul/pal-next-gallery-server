@@ -1,5 +1,6 @@
 import { useDeferredValue, useEffect, useState } from 'react'
 import { Search } from 'lucide-react'
+import { demoMode } from './api/apiClient'
 import { galleryApi } from './api/galleryApi'
 import { AlbumGrid } from './components/AlbumGrid'
 import { AlbumDetailGallery } from './components/AlbumDetailGallery'
@@ -13,6 +14,7 @@ import { MediaViewer } from './components/MediaViewer'
 import { PageHeading } from './components/PageHeading'
 import { SelectionBar } from './components/SelectionBar'
 import { StorageDashboard } from './components/StorageDashboard'
+import { albumSeed, mediaSeed } from './data/gallerySeed'
 import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaItem, MediaSort, StorageStats } from './types/gallery'
 import './App.css'
 
@@ -20,8 +22,8 @@ type Props = { onLogout: () => Promise<void> }
 
 function App({ onLogout }: Props) {
   const [view, setView] = useState<LibraryView>('albums')
-  const [albums, setAlbums] = useState<Album[]>([])
-  const [media, setMedia] = useState<MediaItem[]>([])
+  const [albums, setAlbums] = useState<Album[]>(() => demoMode ? structuredClone(albumSeed) : [])
+  const [media, setMedia] = useState<MediaItem[]>(() => demoMode ? structuredClone(mediaSeed) : [])
   const [activeAlbumId, setActiveAlbumId] = useState<GalleryID | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<MediaFilter>('all')
@@ -30,9 +32,9 @@ function App({ onLogout }: Props) {
   const [selected, setSelected] = useState<GalleryID[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [newAlbumName, setNewAlbumName] = useState('')
-  const [targetAlbumId, setTargetAlbumId] = useState('')
+  const [targetAlbumId, setTargetAlbumId] = useState(() => demoMode ? albumSeed[0]?.id ?? '' : '')
   const [connected, setConnected] = useState(false)
-  const [initializing, setInitializing] = useState(true)
+  const [initializing, setInitializing] = useState(!demoMode)
   const [viewerMediaId, setViewerMediaId] = useState<GalleryID | null>(null)
   const [showEditAlbum, setShowEditAlbum] = useState(false)
   const [storageStats, setStorageStats] = useState<StorageStats>()
@@ -42,6 +44,7 @@ function App({ onLogout }: Props) {
   const deferredQuery = useDeferredValue(query.toLowerCase().trim())
 
   useEffect(() => {
+    if (demoMode) return
     const controller = new AbortController()
     Promise.all([galleryApi.loadAlbums(controller.signal), galleryApi.loadMedia(controller.signal)]).then(([loadedAlbums, loadedMedia]) => {
       setAlbums(loadedAlbums)
@@ -117,6 +120,22 @@ function App({ onLogout }: Props) {
     setView('storage')
     setActiveAlbumId(null)
     setSelected([])
+    if (demoMode) {
+      const photos = media.filter((item) => item.kind === 'photo' && !item.deletedAt)
+      const videos = media.filter((item) => item.kind === 'video' && !item.deletedAt)
+      const photoBytes = photos.reduce((total, item) => total + (item.fileSize ?? 0), 0)
+      const videoBytes = videos.reduce((total, item) => total + (item.fileSize ?? 0), 0)
+      const bySize = [...photos, ...videos].reduce((groups, item) => {
+        if (!item.fileSize) return groups
+        groups.set(item.fileSize, [...(groups.get(item.fileSize) ?? []), item])
+        return groups
+      }, new Map<number, MediaItem[]>())
+      const duplicateGroups = [...bySize.entries()]
+        .filter(([, items]) => items.length > 1)
+        .map(([fileSize, items]) => ({ fileSize, items }))
+      setStorageStats({ totalBytes: photoBytes + videoBytes, photoBytes, videoBytes, thumbnailCacheBytes: 18_874_368, photoCount: photos.length, videoCount: videos.length, largeVideos: videos.toSorted((first, second) => (second.fileSize ?? 0) - (first.fileSize ?? 0)).slice(0, 2), duplicateGroups })
+      return
+    }
     setStorageStats(await galleryApi.storage())
   }
 

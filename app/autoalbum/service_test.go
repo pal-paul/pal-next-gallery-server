@@ -11,7 +11,7 @@ type recordingRepository struct {
 	assignments []Assignment
 }
 
-func (repository *recordingRepository) ListUnassignedAutomaticAlbumMedia(context.Context) ([]Media, error) {
+func (repository *recordingRepository) ListAutomaticAlbumMedia(context.Context) ([]Media, error) {
 	return repository.media, nil
 }
 
@@ -41,7 +41,7 @@ func TestRunAssignsOctoberWeek(t *testing.T) {
 	if assignment.DailyTitle != "October 8" || assignment.DailyKey != "day:2026-10-08" {
 		t.Fatalf("unexpected daily album: %#v", assignment)
 	}
-	if assignment.DailyThreshold != 15 || assignment.MediaID != "media-1" {
+	if assignment.DailyThreshold != 15 || assignment.MaxAlbumMedia != 100 || assignment.MediaID != "media-1" {
 		t.Fatalf("unexpected assignment: %#v", assignment)
 	}
 	if assignment.OwnerID != "user-1" {
@@ -75,6 +75,20 @@ func TestRunAssignsSharedMediaToEachUsersAutomaticAlbum(t *testing.T) {
 	}
 	if repository.assignments[0].OwnerID != "owner-a" || repository.assignments[1].OwnerID != "recipient-b" {
 		t.Fatalf("unexpected automatic album owners: %#v", repository.assignments)
+	}
+}
+
+func TestRunReconcilesOwnerDayOnce(t *testing.T) {
+	createdAt := time.Date(2026, time.October, 8, 14, 30, 0, 0, time.UTC)
+	repository := &recordingRepository{media: []Media{
+		{ID: "media-1", AlbumOwnerID: "owner-a", CreatedAt: createdAt},
+		{ID: "media-2", AlbumOwnerID: "owner-a", CreatedAt: createdAt.Add(time.Hour)},
+	}}
+	if err := NewService(repository).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.assignments) != 1 {
+		t.Fatalf("expected one reconciliation for the owner and day, got %d", len(repository.assignments))
 	}
 }
 

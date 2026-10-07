@@ -74,5 +74,5 @@ jobs:
             ENV_MEDIA_DIR=${{ steps.image-config.outputs.media_dir }}
             ENV_TMP_DIR=${{ steps.image-config.outputs.tmp_dir }}
             ENV_PORT=${{ steps.image-config.outputs.port }}
-          cache-from: type=gha,scope=container-image
-          cache-to: type=gha,mode=max,scope=container-image
+          cache-from: type=gha,scope=container-image-amd64
+          cache-to: type=gha,mode=max,scope=container-image-amd64

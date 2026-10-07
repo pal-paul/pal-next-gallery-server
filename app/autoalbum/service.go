@@ -8,7 +8,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const DailyAlbumThreshold = 15
+const (
+	DailyAlbumThreshold = 15
+	MaxAlbumMedia       = 100
+)
 
 type Media struct {
 	ID           string
@@ -29,10 +32,11 @@ type Assignment struct {
 	WeeklyKey      string
 	WeeklyTitle    string
 	DailyThreshold int
+	MaxAlbumMedia  int
 }
 
 type Repository interface {
-	ListUnassignedAutomaticAlbumMedia(context.Context) ([]Media, error)
+	ListAutomaticAlbumMedia(context.Context) ([]Media, error)
 	AssignAutomaticAlbum(context.Context, Assignment) error
 }
 
@@ -45,14 +49,21 @@ func NewService(repository Repository) *Service {
 }
 
 func (service *Service) Run(ctx context.Context) error {
-	media, err := service.repository.ListUnassignedAutomaticAlbumMedia(ctx)
+	media, err := service.repository.ListAutomaticAlbumMedia(ctx)
 	if err != nil {
 		return err
 	}
+	reconciledDays := make(map[string]struct{})
 	for _, item := range media {
+		dayStart, _, _ := albumPeriod(item.CreatedAt)
+		key := item.AlbumOwnerID + ":" + dayStart.Format("2006-01-02")
+		if _, reconciled := reconciledDays[key]; reconciled {
+			continue
+		}
 		if err := service.repository.AssignAutomaticAlbum(ctx, assignmentFor(item)); err != nil {
 			return err
 		}
+		reconciledDays[key] = struct{}{}
 	}
 	return nil
 }
@@ -72,6 +83,7 @@ func assignmentFor(media Media) Assignment {
 		WeeklyKey:      "week:" + weekStart.Format("2006-01-02"),
 		WeeklyTitle:    weeklyTitle(weekStart, weekEnd),
 		DailyThreshold: DailyAlbumThreshold,
+		MaxAlbumMedia:  MaxAlbumMedia,
 	}
 }
 

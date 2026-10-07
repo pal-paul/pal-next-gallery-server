@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -152,6 +151,7 @@ func (handler *Service) authCookie(request *http.Request, value string, maxAge i
 	if secure && origin != "" {
 		sameSite = http.SameSiteNoneMode
 	}
+	// #nosec G124 -- Secure is derived from direct TLS or a verified trusted proxy.
 	return &http.Cookie{Name: sessionCookie, Value: value, Path: "/", HttpOnly: true, Secure: secure, SameSite: sameSite, MaxAge: maxAge}
 }
 
@@ -173,13 +173,6 @@ func (handler *Service) RequireAuth() gin.HandlerFunc {
 		context.Set(UserContextKey, user)
 		context.Next()
 	}
-}
-func parseDate(value string) (*time.Time, error) {
-	parsed, err := time.Parse("2006-01-02", value)
-	if err != nil {
-		return nil, errors.New("dates must use YYYY-MM-DD format")
-	}
-	return &parsed, nil
 }
 
 func decodeJSON(request *http.Request, target any) error {

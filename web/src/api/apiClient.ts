@@ -5,6 +5,8 @@ const apiBase = import.meta.env.ENV_API_URL ?? (import.meta.env.DEV
   ? (tailscaleHostname ? `https://${tailscaleHostname}` : `${pageProtocol}//${globalThis.location.hostname}:8081`)
   : productionBase)
 
+export const demoMode = import.meta.env.MODE === 'demo'
+
 export class ApiError extends Error {
   status: number
 

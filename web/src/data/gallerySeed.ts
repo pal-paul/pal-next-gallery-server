@@ -1,24 +1,24 @@
 import type { Album, MediaItem } from '../types/gallery'
 
 export const mediaSeed: MediaItem[] = [
-  { id: '1', title: 'Quiet shore', kind: 'photo', createdAt: '2026-08-28', tags: ['coast', 'summer'], url: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=85' },
-  { id: '2', title: 'Late summer light', kind: 'photo', createdAt: '2026-08-27', tags: ['field', 'summer'], url: 'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=1200&q=85' },
-  { id: '3', title: 'Mountain air', kind: 'video', createdAt: '2026-08-26', tags: ['mountain', 'trip'], url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=85', duration: '0:18' },
-  { id: '4', title: 'City in motion', kind: 'video', createdAt: '2026-08-19', tags: ['city', 'night'], url: 'https://images.unsplash.com/photo-1514565131-fce0801e5785?auto=format&fit=crop&w=1200&q=85', duration: '0:42' },
-  { id: '5', title: 'Museum afternoon', kind: 'photo', createdAt: '2026-08-18', tags: ['city', 'art'], url: 'https://images.unsplash.com/photo-1561214115-f2f134cc4912?auto=format&fit=crop&w=1200&q=85' },
-  { id: '6', title: 'Corner table', kind: 'photo', createdAt: '2026-08-17', tags: ['friends', 'food'], url: 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&w=1200&q=85' },
-  { id: '7', title: 'Green passage', kind: 'photo', createdAt: '2026-08-10', tags: ['forest', 'walk'], url: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=85' },
-  { id: '8', title: 'Over the ridge', kind: 'photo', createdAt: '2026-08-09', tags: ['mountain', 'trip'], url: 'https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1200&q=85' },
-  { id: '9', title: 'Sea glass', kind: 'video', createdAt: '2026-08-08', tags: ['coast', 'summer'], url: 'https://images.unsplash.com/photo-1498623116890-37e912163d5d?auto=format&fit=crop&w=1200&q=85', duration: '1:04' },
-  { id: '10', title: 'Sunday market', kind: 'photo', createdAt: '2026-08-03', tags: ['market', 'city'], url: 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?auto=format&fit=crop&w=1200&q=85' },
-  { id: '11', title: 'Blue hour', kind: 'photo', createdAt: '2026-07-29', tags: ['city', 'night'], url: 'https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1200&q=85' },
-  { id: '12', title: 'Road north', kind: 'video', createdAt: '2026-07-27', tags: ['road', 'trip'], url: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1200&q=85', duration: '0:36' },
+  { id: '1', title: 'Quiet shore', kind: 'photo', favorite: true, createdAt: '2026-08-28', tags: ['coast', 'summer'], fileName: 'quiet-shore.jpg', fileSize: 4_820_116, width: 4032, height: 3024, camera: 'Sony A7 IV', latitude: 57.7089, longitude: 11.9746, url: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=85' },
+  { id: '2', title: 'Late summer light', kind: 'photo', createdAt: '2026-08-27', tags: ['field', 'summer'], fileName: 'summer-light.jpg', fileSize: 3_610_422, width: 4000, height: 2667, camera: 'Fujifilm X-T5', latitude: 59.3293, longitude: 18.0686, url: 'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&w=1200&q=85' },
+  { id: '3', title: 'Mountain air', kind: 'video', favorite: true, createdAt: '2026-08-26', tags: ['mountain', 'trip'], fileName: 'mountain-air.mp4', fileSize: 84_934_656, width: 3840, height: 2160, latitude: 61.6871, longitude: 6.8153, url: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=85', duration: '0:18' },
+  { id: '4', title: 'City in motion', kind: 'video', createdAt: '2026-08-19', tags: ['city', 'night'], fileName: 'city-motion.mp4', fileSize: 142_606_336, width: 3840, height: 2160, url: 'https://images.unsplash.com/photo-1514565131-fce0801e5785?auto=format&fit=crop&w=1200&q=85', duration: '0:42' },
+  { id: '5', title: 'Museum afternoon', kind: 'photo', createdAt: '2026-08-18', tags: ['city', 'art'], fileName: 'museum.jpg', fileSize: 5_201_884, width: 4032, height: 3024, camera: 'iPhone 16 Pro', url: 'https://images.unsplash.com/photo-1561214115-f2f134cc4912?auto=format&fit=crop&w=1200&q=85' },
+  { id: '6', title: 'Corner table', kind: 'photo', favorite: true, createdAt: '2026-08-17', tags: ['friends', 'food'], fileName: 'corner-table.jpg', fileSize: 3_610_422, width: 3024, height: 4032, url: 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&w=1200&q=85' },
+  { id: '7', title: 'Green passage', kind: 'photo', createdAt: '2026-08-10', tags: ['forest', 'walk'], fileName: 'green-passage.jpg', fileSize: 4_103_221, width: 4000, height: 2667, latitude: 56.2639, longitude: 9.5018, url: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1200&q=85' },
+  { id: '8', title: 'Over the ridge', kind: 'photo', createdAt: '2026-08-09', tags: ['mountain', 'trip'], fileName: 'ridge.jpg', fileSize: 6_224_019, width: 6000, height: 4000, url: 'https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1200&q=85' },
+  { id: '9', title: 'Sea glass', kind: 'video', createdAt: '2026-08-08', tags: ['coast', 'summer'], fileName: 'sea-glass.mp4', fileSize: 218_103_808, width: 3840, height: 2160, url: 'https://images.unsplash.com/photo-1498623116890-37e912163d5d?auto=format&fit=crop&w=1200&q=85', duration: '1:04' },
+  { id: '10', title: 'Sunday market', kind: 'photo', createdAt: '2026-08-03', deletedAt: '2026-09-01T10:15:00Z', tags: ['market', 'city'], fileName: 'market.jpg', fileSize: 3_610_422, width: 4032, height: 3024, url: 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?auto=format&fit=crop&w=1200&q=85' },
+  { id: '11', title: 'Blue hour', kind: 'photo', createdAt: '2026-07-29', tags: ['city', 'night'], fileName: 'blue-hour.jpg', fileSize: 4_704_882, width: 4032, height: 3024, latitude: 55.6761, longitude: 12.5683, url: 'https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1200&q=85' },
+  { id: '12', title: 'Road north', kind: 'video', createdAt: '2026-07-27', tags: ['road', 'trip'], fileName: 'road-north.mp4', fileSize: 112_197_632, width: 3840, height: 2160, url: 'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1200&q=85', duration: '0:36' },
 ]
 
 export const albumSeed: Album[] = [
-  { id: '1', title: 'August 24-30', createdAt: '2026-08-30', automatic: true, itemCount: 3, mediaIds: ['1', '2', '3'] },
-  { id: '2', title: 'August 17-23', createdAt: '2026-08-23', automatic: true, itemCount: 3, mediaIds: ['4', '5', '6'] },
-  { id: '3', title: 'Mountain escape', createdAt: '2026-08-12', automatic: false, itemCount: 4, mediaIds: ['3', '7', '8', '12'] },
-  { id: '4', title: 'Coastal days', createdAt: '2026-08-09', automatic: false, itemCount: 3, mediaIds: ['1', '2', '9'] },
-  { id: '5', title: 'City notes', createdAt: '2026-08-04', automatic: false, itemCount: 4, mediaIds: ['4', '5', '10', '11'] },
+  { id: '1', title: 'August 24-30', createdAt: '2026-08-30', automatic: true, itemCount: 3, mediaIds: ['1', '2', '3'], coverMediaId: '1', coverUrl: mediaSeed[0].url },
+  { id: '2', title: 'August 17-23', createdAt: '2026-08-23', automatic: true, itemCount: 3, mediaIds: ['4', '5', '6'], coverMediaId: '5', coverUrl: mediaSeed[4].url },
+  { id: '3', title: 'Mountain escape', description: 'Long trails, cold mornings, and the road home.', createdAt: '2026-08-12', automatic: false, itemCount: 4, mediaIds: ['3', '7', '8', '12'], coverMediaId: '8', coverUrl: mediaSeed[7].url },
+  { id: '4', title: 'Coastal days', createdAt: '2026-08-09', automatic: false, itemCount: 3, mediaIds: ['1', '2', '9'], coverMediaId: '9', coverUrl: mediaSeed[8].url },
+  { id: '5', title: 'City notes', createdAt: '2026-08-04', automatic: false, itemCount: 4, mediaIds: ['4', '5', '10', '11'], coverMediaId: '11', coverUrl: mediaSeed[10].url },
 ]

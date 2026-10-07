@@ -19,6 +19,7 @@ import (
 	store "pal-next-gallery-server/app/db"
 	"pal-next-gallery-server/app/frontend"
 	"pal-next-gallery-server/app/gallery"
+	"pal-next-gallery-server/app/nasimport"
 	"pal-next-gallery-server/app/operations"
 	"pal-next-gallery-server/app/processing"
 	"pal-next-gallery-server/app/publicshare"
@@ -33,7 +34,6 @@ import (
 )
 
 var (
-	err    error
 	envVar Environment
 	router *gin.Engine
 )
@@ -62,6 +62,7 @@ type Environment struct {
 	Issuer          string `env:"ENV_ISSUER,default=issuer.palpaul.com"`
 	AutoAlbumRunAt  string `env:"ENV_AUTO_ALBUM_RUN_AT,default=02:00"`
 	AutoAlbumZone   string `env:"ENV_AUTO_ALBUM_TIMEZONE,default=Local"`
+	NASImportPath   string `env:"NAS_IMPORT_PATH"`
 }
 
 // Initializing environment variables
@@ -130,6 +131,13 @@ func run() error {
 		return err
 	}
 	autoAlbumService := autoalbum.NewService(database)
+	var nasImportService *nasimport.Service
+	if strings.TrimSpace(envVar.NASImportPath) != "" {
+		nasImportService, err = nasimport.New(database, envVar.NASImportPath, envVar.MediaDir)
+		if err != nil {
+			return fmt.Errorf("create NAS import service: %w", err)
+		}
+	}
 	uploaderService, err := uploader.New(
 		envVar.TmpDir,
 		envVar.MediaDir,
@@ -226,6 +234,12 @@ func run() error {
 	defer stopScheduler()
 	go processingService.Run(schedulerCtx)
 	go trashService.Run(schedulerCtx)
+	if nasImportService != nil {
+		go nasImportService.RunScheduled(schedulerCtx, autoAlbumSchedule, func(err error) {
+			slog.Error("NAS media import failed", "error", err)
+		})
+		slog.Info("NAS media import scheduled", "path", envVar.NASImportPath, "runAt", envVar.AutoAlbumRunAt, "timezone", autoAlbumSchedule.Location.String())
+	}
 	go autoAlbumService.RunScheduled(schedulerCtx, autoAlbumSchedule, func(err error) {
 		slog.Error("automatic album reconciliation failed", "error", err)
 	})
