@@ -2,12 +2,15 @@ package auth
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pquerna/otp/totp"
 )
 
 func TestLoginRateLimit(t *testing.T) {
@@ -36,6 +39,79 @@ func TestSessionRejectsMissingCookie(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestVerifyTOTPReturnsActionableUnauthorizedReason(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		expectedCode  string
+		expectedError string
+	}{
+		{
+			name:          "invalid challenge",
+			body:          `{"challengeToken":"missing","code":"123456"}`,
+			expectedCode:  "invalid_challenge",
+			expectedError: "Authentication challenge expired. Sign in again.",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := NewService(&memoryRepository{}, "PAL Gallery Test")
+			request := httptest.NewRequest(http.MethodPost, "/auth/verify", bytes.NewBufferString(test.body))
+			response := httptest.NewRecorder()
+
+			service.VerifyTOTP(response, request)
+
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("got status %d, want %d", response.Code, http.StatusUnauthorized)
+			}
+			var payload map[string]string
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["code"] != test.expectedCode || payload["error"] != test.expectedError {
+				t.Fatalf("got response %#v", payload)
+			}
+		})
+	}
+}
+
+func TestLoginAndVerifyTOTPHandlersCreateSession(t *testing.T) {
+	repository := &memoryRepository{user: passwordUser(t, true)}
+	service := NewService(repository, "PAL Gallery Test")
+	loginRequest := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(
+		`{"username":"admin","password":"correct-horse-battery"}`,
+	))
+	loginResponse := httptest.NewRecorder()
+	service.Login(loginResponse, loginRequest)
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("login returned status %d", loginResponse.Code)
+	}
+	var challenge LoginChallenge
+	if err := json.NewDecoder(loginResponse.Body).Decode(&challenge); err != nil {
+		t.Fatal(err)
+	}
+	code, err := totp.GenerateCode(challenge.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyBody, err := json.Marshal(map[string]string{"challengeToken": challenge.ChallengeToken, "code": code})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyRequest := httptest.NewRequest(http.MethodPost, "/auth/verify", bytes.NewReader(verifyBody))
+	verifyResponse := httptest.NewRecorder()
+
+	service.VerifyTOTP(verifyResponse, verifyRequest)
+
+	if verifyResponse.Code != http.StatusOK {
+		t.Fatalf("verify returned status %d: %s", verifyResponse.Code, verifyResponse.Body.String())
+	}
+	if len(verifyResponse.Result().Cookies()) != 1 || verifyResponse.Result().Cookies()[0].Name != sessionCookie {
+		t.Fatalf("verify did not issue %s cookie", sessionCookie)
 	}
 }
 

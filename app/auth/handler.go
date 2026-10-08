@@ -57,10 +57,16 @@ func (handler *Service) VerifyTOTP(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	token, err := handler.Verify(request.Context(), input.ChallengeToken, input.Code)
-	if errors.Is(err, ErrInvalidChallenge) || errors.Is(err, ErrInvalidCode) {
+	if errors.Is(err, ErrInvalidChallenge) {
 		handler.recordFailedAttempt(handler.verifyAttempts,
 			"token:"+tokenHash(input.ChallengeToken), "ip:"+handler.clientAddress(request))
-		writeError(writer, http.StatusUnauthorized, err)
+		writeAuthError(writer, "invalid_challenge", "Authentication challenge expired. Sign in again.", err)
+		return
+	}
+	if errors.Is(err, ErrInvalidCode) {
+		handler.recordFailedAttempt(handler.verifyAttempts,
+			"token:"+tokenHash(input.ChallengeToken), "ip:"+handler.clientAddress(request))
+		writeAuthError(writer, "invalid_code", "The code is incorrect or expired. Try the current code.", err)
 		return
 	}
 	if err != nil {
@@ -231,6 +237,11 @@ func respond(writer http.ResponseWriter, value any, err error) {
 func writeError(writer http.ResponseWriter, status int, err error) {
 	slog.Error("request failed", "status", status, "error", err)
 	writeJSON(writer, status, map[string]string{"error": http.StatusText(status)})
+}
+
+func writeAuthError(writer http.ResponseWriter, code, message string, err error) {
+	slog.Warn("authentication failed", "status", http.StatusUnauthorized, "code", code, "error", err)
+	writeJSON(writer, http.StatusUnauthorized, map[string]string{"code": code, "error": message})
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
