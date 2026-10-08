@@ -79,7 +79,7 @@ func TestSetupPageLifecycle(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
+	if response.Code != http.StatusNoContent || response.Body.Len() != 0 {
 		t.Fatalf("unexpected setup response: %d %q", response.Code, response.Body.String())
 	}
 

@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useState } from 'react'
 import { Search } from 'lucide-react'
-import { demoMode } from './api/apiClient'
+import { ApiError, demoMode } from './api/apiClient'
 import { galleryApi } from './api/galleryApi'
 import { AlbumGrid } from './components/AlbumGrid'
 import { AlbumDetailGallery } from './components/AlbumDetailGallery'
@@ -20,6 +20,15 @@ import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaIt
 import './App.css'
 
 type Props = { onLogout: () => Promise<void> }
+
+const sharingErrorMessage = (error: unknown) => {
+  if (!(error instanceof ApiError)) return 'Unable to share the library. Please try again.'
+  if (error.status === 400) return 'That account cannot receive this share.'
+  if (error.status === 401) return 'Your session has expired. Sign in and try again.'
+  if (error.status === 403) return 'You do not have permission to share this library.'
+  if (error.status === 404) return 'The username or media could not be found.'
+  return 'Unable to share the library. Please try again.'
+}
 
 function App({ onLogout }: Props) {
   const [view, setView] = useState<LibraryView>('albums')
@@ -45,6 +54,8 @@ function App({ onLogout }: Props) {
   const [shareMediaId, setShareMediaId] = useState<GalleryID | null>(null)
   const [shareUsername, setShareUsername] = useState('')
   const [sharePermission, setSharePermission] = useState<SharePermission>('read')
+  const [shareError, setShareError] = useState<string>()
+  const [sharing, setSharing] = useState(false)
   const deferredQuery = useDeferredValue(query.toLowerCase().trim())
 
   useEffect(() => {
@@ -225,12 +236,21 @@ function App({ onLogout }: Props) {
     setShareMediaId(mediaId)
     setShareUsername('')
     setSharePermission('read')
+    setShareError(undefined)
   }
 
   const shareMedia = async () => {
-    if (!shareMediaId || !shareUsername.trim()) return
-    if (connected) await galleryApi.shareMedia(shareMediaId, shareUsername.trim(), sharePermission)
-    setShareMediaId(null)
+    if (!shareMediaId || !shareUsername.trim() || sharing) return
+    setSharing(true)
+    setShareError(undefined)
+    try {
+      if (connected) await galleryApi.shareMedia(shareMediaId, shareUsername.trim(), sharePermission)
+      setShareMediaId(null)
+    } catch (error: unknown) {
+      setShareError(sharingErrorMessage(error))
+    } finally {
+      setSharing(false)
+    }
   }
 
   const deleteMedia = async (mediaId: GalleryID) => {
@@ -290,7 +310,7 @@ function App({ onLogout }: Props) {
         )}
       </main>
       <CreateAlbumDialog open={showCreate} name={newAlbumName} onNameChange={setNewAlbumName} onClose={() => setShowCreate(false)} onCreate={createAlbum} />
-      <ShareMediaDialog open={Boolean(shareMediaId)} username={shareUsername} permission={sharePermission} onUsernameChange={setShareUsername} onPermissionChange={setSharePermission} onClose={() => setShareMediaId(null)} onShare={() => void shareMedia()} />
+      <ShareMediaDialog open={Boolean(shareMediaId)} username={shareUsername} permission={sharePermission} error={shareError} pending={sharing} onUsernameChange={(value) => { setShareUsername(value); setShareError(undefined) }} onPermissionChange={(value) => { setSharePermission(value); setShareError(undefined) }} onClose={() => { if (!sharing) setShareMediaId(null) }} onShare={() => void shareMedia()} />
       {activeAlbum && <EditAlbumDialog open={showEditAlbum} album={activeAlbum} media={media} name={editAlbumName} description={editAlbumDescription} coverMediaId={editCoverMediaId} onNameChange={setEditAlbumName} onDescriptionChange={setEditAlbumDescription} onCoverChange={setEditCoverMediaId} onClose={() => setShowEditAlbum(false)} onSave={saveAlbumEdits} />}
       {viewerItem && <MediaViewer item={viewerItem} hasMultiple={visibleMedia.length > 1} onClose={() => setViewerMediaId(null)} onPrevious={() => showViewerItem(-1)} onNext={() => showViewerItem(1)} />}
     </div>

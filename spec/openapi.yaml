@@ -228,8 +228,8 @@ paths:
                   minLength: 12
                   description: Must exactly match `password`.
       responses:
-        "201":
-          description: Administrator created.
+        "204":
+          description: Administrator created; no response body is returned.
         "400":
           description: Invalid request values.
         "401":

@@ -143,7 +143,7 @@ func (service *Service) SubmitSetup(context *gin.Context) {
 		context.JSON(http.StatusInternalServerError, gin.H{"error": "unable to complete setup"})
 		return
 	}
-	context.Status(http.StatusCreated)
+	context.Status(http.StatusNoContent)
 }
 
 func (service *Service) pageAvailable(context *gin.Context) bool {

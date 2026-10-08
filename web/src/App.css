@@ -509,6 +509,7 @@ main { width: min(1400px, calc(100% - 48px)); margin: 0 auto; padding: 55px 0 ma
 .auth-submit { width: 100%; margin-top: 24px; justify-content: center; }
 .auth-submit:disabled { cursor: wait; opacity: .55; }
 .auth-error { margin-top: 14px; color: #a02f2f; font-size: 12px; }
+.dialog-error { margin: 14px 0 0; color: #a02f2f; font-size: 12px; }
 .auth-loading { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
 .spin { animation: spin .9s linear infinite; }
 .totp-setup { padding: 16px; border: 1px solid var(--line); background: var(--paper); text-align: center; }
