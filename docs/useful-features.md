@@ -4,6 +4,87 @@ The NAS media server includes the following optional workflows. All management
 endpoints require the existing session cookie. User endpoints require the
 `user` role; `/admin` endpoints require `admin`.
 
+## API client authentication lifecycle
+
+The API uses a server-side session identified by the
+`pal_medias_uploader_session` cookie. It does not return a bearer token after
+login. Browser clients handle this cookie automatically when credentials are
+enabled. Native clients, including Android applications, must use a persistent
+cookie jar that accepts `Set-Cookie` response headers and adds the matching
+cookie to later requests.
+
+A client should implement the following user journey:
+
+1. Send `POST /auth/login` with `username` and `password` as JSON.
+2. If the response has `authenticated: true`, login is complete and the
+   response already contains the session `Set-Cookie` header. This path is
+   used only for an account that does not require TOTP.
+3. Otherwise, retain the returned `challengeToken`. On a user's first TOTP
+   login, also show the returned `provisioningUri` or `secret` so the user can
+   add the account to an authenticator application. The challenge expires
+   after five minutes.
+4. Ask the user for the current six-digit code and send `POST /auth/verify`
+   with `challengeToken` and `code`. Do not start authenticated API requests
+   until this response succeeds and its `Set-Cookie` header has been saved by
+   the cookie jar.
+5. Optionally call `GET /auth/session` to confirm the session and retrieve the
+   user's `id`, `username`, and `role`.
+6. Send the stored `pal_medias_uploader_session` cookie on every protected
+   request, such as `GET /albums`, `GET /media`, and `GET /storage`.
+7. On `401 Unauthorized`, discard the local session state and return the user
+   to login. The cookie may be missing, expired, invalid, or no longer backed
+   by a server session.
+8. To sign out, send `POST /auth/logout` with the current cookie, then remove
+   it from the cookie jar. The response expires the cookie and deletes the
+   server-side session.
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant Client as Native client
+  participant Jar as Persistent cookie jar
+  participant API as Media server API
+
+  User->>Client: Enter username and password
+  Client->>API: POST /auth/login
+  alt TOTP is required
+   API-->>Client: 200 challengeToken and optional provisioningUri
+   Client->>User: Show TOTP enrollment when provided, then request code
+   User->>Client: Enter six-digit code
+   Client->>API: POST /auth/verify with challengeToken and code
+   API-->>Client: 200 and Set-Cookie
+  else TOTP is not required
+   API-->>Client: 200 authenticated=true and Set-Cookie
+  end
+  Client->>Jar: Persist pal_medias_uploader_session
+  Client->>API: GET /auth/session with Cookie
+  API-->>Client: 200 current user
+  par Load initial library
+   Client->>API: GET /albums with Cookie
+   API-->>Client: 200 album array
+  and
+   Client->>API: GET /media with Cookie
+   API-->>Client: 200 media array
+  end
+  Client->>API: POST /auth/logout with Cookie
+  API-->>Client: 204 and expired Set-Cookie
+  Client->>Jar: Remove session cookie
+```
+
+For a new user with no albums or media, `GET /albums` and `GET /media` return
+`200 OK` with `[]`; `GET /storage` returns zero totals. Clients should treat
+these as valid empty states, not as authentication or server errors. A `500`
+is not an expected empty-library response: record the failing method, path,
+response body, and server log before retrying. A `401` immediately after a
+successful TOTP verification usually means the native client did not retain
+or resend the session cookie.
+
+The session cookie is HTTP-only, applies to `/`, and has a 30-day lifetime.
+When the server is reached over HTTPS, clients must honor its `Secure`
+attribute and continue using HTTPS. Cookie matching still follows the request
+host, path, and scheme, so changing between a hostname and an IP address can
+prevent a stored cookie from being sent.
+
 ## Uploads and processing
 
 - `POST /media/upload/check` checks an owner-scoped SHA-256 digest before

@@ -375,14 +375,18 @@ func requestLoggerMiddleware() gin.HandlerFunc {
 	return func(context *gin.Context) {
 		started := time.Now()
 		context.Next()
-		slog.Info("http request",
+		attributes := []any{
 			"method", context.Request.Method,
 			"path", context.Request.URL.Path,
 			"status", context.Writer.Status(),
 			"durationMs", time.Since(started).Milliseconds(),
 			"clientIP", context.ClientIP(),
 			"errors", len(context.Errors),
-		)
+		}
+		if len(context.Errors) > 0 {
+			attributes = append(attributes, "error", context.Errors.String())
+		}
+		slog.Info("http request", attributes...)
 	}
 }
 
