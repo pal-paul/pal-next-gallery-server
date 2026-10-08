@@ -73,7 +73,7 @@ export function MediaGrid({ media, layout = 'grid', selected, canRemove, canDele
                   {canRemove && <button role="menuitem" onClick={() => runAction(() => onRemove(item.id))}><FolderMinus size={17} /> Remove from album</button>}
                   {!inTrash && permission === 'owner' && <button role="menuitem" onClick={() => runAction(() => onShare(item.id))}><Share2 size={17} /> Share</button>}
                   {!inTrash && permission !== 'read' && <button className="destructive" role="menuitem" onClick={() => runAction(() => onTrash(item.id))}><Trash2 size={17} /> Move to deleted</button>}
-                  {canDelete && <button className="destructive" role="menuitem" onClick={() => runAction(() => onDelete(item.id))}><X size={17} /> Delete permanently</button>}
+                  {canDelete && permission === 'owner' && <button className="destructive" role="menuitem" onClick={() => runAction(() => onDelete(item.id))}><X size={17} /> Delete permanently</button>}
                   {inTrash && <button role="menuitem" onClick={() => runAction(() => onRestore(item.id))}><ArchiveRestore size={17} /> Restore</button>}
                 </div>
               )}
