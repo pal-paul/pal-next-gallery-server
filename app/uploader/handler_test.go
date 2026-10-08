@@ -310,6 +310,33 @@ func TestCompleteUploadRemovesFileWhenPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestCompleteDuplicateReleasesPendingUploadQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	tmpDir := filepath.Join(root, "tmp")
+	repository := &recordingMediaRepository{saveErr: ErrDuplicateMedia}
+	service := newTestService(t, tmpDir, filepath.Join(root, "media"), 4,
+		WithMediaRepository(repository), WithMaxActiveUploads(1), WithMinDiskFree(0))
+	router := newTestRouter(t, service)
+	created := createUpload(t, router, `{"filename":"duplicate.mp4","size":4}`)
+	if response := performRequest(router, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewBufferString("data")); response.Code != http.StatusOK {
+		t.Fatalf("upload part returned %d: %s", response.Code, response.Body.String())
+	}
+
+	response := performRequest(router, http.MethodPost, "/media/upload/"+created.ID+"/complete", nil)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("got %d, want %d: %s", response.Code, http.StatusConflict, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, created.ID)); !os.IsNotExist(err) {
+		t.Fatalf("duplicate upload directory still exists: %v", err)
+	}
+	response = performRequest(router, http.MethodGet, "/media/upload/"+created.ID, nil)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("duplicate upload status returned %d, want %d", response.Code, http.StatusNotFound)
+	}
+	createUpload(t, router, `{"filename":"next.mp4","size":4}`)
+}
+
 func TestUploadSessionIsPrivateToOwner(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	root := t.TempDir()

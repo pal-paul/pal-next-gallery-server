@@ -1,12 +1,37 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestRequestLoggerIncludesHandlerError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var output bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	router := gin.New()
+	router.Use(requestLoggerMiddleware())
+	router.GET("/albums", func(context *gin.Context) {
+		_ = context.Error(errors.New("database unavailable"))
+		context.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/albums", nil))
+
+	if !strings.Contains(output.String(), "database unavailable") {
+		t.Fatalf("request log does not contain handler error: %s", output.String())
+	}
+}
 
 func TestCORSMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)

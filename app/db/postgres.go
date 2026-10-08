@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS albums (
 );
 ALTER TABLE albums ADD COLUMN IF NOT EXISTS automatic BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE albums ADD COLUMN IF NOT EXISTS auto_key TEXT;
+ALTER TABLE albums ADD COLUMN IF NOT EXISTS position INTEGER;
+ALTER TABLE albums ADD COLUMN IF NOT EXISTS cover_media_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS albums_owner_position_idx ON albums(owner_id, position, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS albums_owner_auto_key_idx ON albums(owner_id, auto_key) WHERE auto_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS import_sessions (

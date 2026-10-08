@@ -330,6 +330,16 @@ func (s *service) HandleCompleteUpload(context *gin.Context) {
 				_ = context.Error(fmt.Errorf("remove uncommitted media: %w", removeErr))
 			}
 			if errors.Is(err, ErrDuplicateMedia) {
+				if removeErr := os.RemoveAll(dir); removeErr != nil {
+					internalError(context, fmt.Errorf("remove duplicate upload chunks: %w", removeErr))
+					return
+				}
+				session.deleted = true
+				s.uploadMux.Lock()
+				if s.uploads[u.ID] == session {
+					delete(s.uploads, u.ID)
+				}
+				s.uploadMux.Unlock()
 				context.JSON(http.StatusConflict, gin.H{"error": ErrDuplicateMedia.Error()})
 				return
 			}
