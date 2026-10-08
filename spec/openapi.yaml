@@ -41,10 +41,12 @@ info:
     grant: the recipient can access all of that owner's current and future active
     media for listing, download, album membership, favorites, storage totals, and
     automatic albums. Sharing never transfers ownership. Favorites are per-user.
-    Trashing is owner-only and immediately hides media from recipients; permanent
-    deletion stages the physical file and generated thumbnail, removes associated
-    database rows, and then removes the staged files. Public album links never
-    expose media owned by another user.
+    Share grants explicitly provide `read` or `write` access. Write recipients may
+    move active media to the owner's trash; read recipients may not. Trashing
+    immediately hides media from every recipient. Owner trash defaults to 30-day
+    retention, after which cleanup removes the physical file, generated thumbnail,
+    and associated database rows. Immediate permanent deletion remains owner-only.
+    Public album links never expose media owned by another user.
 
     ## Albums
 
@@ -164,19 +166,12 @@ paths:
     get:
       tags: [Setup]
       operationId: initialSetupPage
-      summary: Open one-time administrator setup
-      description: |
-        Renders an embedded HTML form. The route is available only while the
-        users table is empty. It returns `404` after any account exists, so setup
-        completion requires no separate state flag.
+      summary: Open setup in the main web interface
+      description: Redirects to the React web application, which checks setup status before rendering sign-in.
       security: []
       responses:
-        "200":
-          description: Initial administrator setup HTML page.
-          content:
-            text/html:
-              schema:
-                type: string
+        "303":
+          description: Redirect to the web application root.
         "404":
           description: Setup is complete or frontend pages are disabled.
     post:
@@ -184,7 +179,7 @@ paths:
       operationId: createInitialAdministrator
       summary: Create the first persistent administrator
       description: |
-        Accepts a form body of at most 64 KiB. Bootstrap credentials are compared
+        Accepts a JSON body of at most 64 KiB. Bootstrap credentials are compared
         with `ENV_ADMIN_USERNAME` and `ENV_ADMIN_PASSWORD` and authorize this
         operation only; they are never persisted and cannot be used at
         `/auth/login`.
@@ -198,7 +193,7 @@ paths:
       requestBody:
         required: true
         content:
-          application/x-www-form-urlencoded:
+          application/json:
             schema:
               type: object
               required: [bootstrapUsername, bootstrapPassword, username, password, confirmPassword]
@@ -227,19 +222,35 @@ paths:
                   description: Must exactly match `password`.
       responses:
         "201":
-          description: Administrator created; setup HTML confirms completion.
-          content:
-            text/html:
-              schema:
-                type: string
+          description: Administrator created.
         "400":
-          description: Invalid form values.
+          description: Invalid request values.
         "401":
           description: Invalid bootstrap credentials.
         "404":
           description: Setup is complete or frontend pages are disabled.
         "500":
-          description: The administrator could not be hashed or persisted. The HTML response contains a generic error.
+          description: The administrator could not be hashed or persisted.
+  /setup/status:
+    get:
+      tags: [Setup]
+      operationId: getInitialSetupStatus
+      summary: Check whether initial administrator setup is required
+      security: []
+      responses:
+        "200":
+          description: Current setup state.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [required]
+                properties:
+                  required:
+                    type: boolean
+        "404":
+          description: Frontend pages are disabled.
   /auth/login:
     post:
       tags: [Authentication]
@@ -755,8 +766,8 @@ paths:
     delete:
       tags: [Gallery]
       operationId: trashMedia
-      summary: Move owned media to trash
-      description: Soft-deletes owned active media. It immediately disappears from recipients, downloads, normal listings, and album results.
+      summary: Move writable media to trash
+      description: Soft-deletes active media owned by the current user or shared with `write` permission. It immediately disappears from recipients, downloads, normal listings, and album results. The owner's retention period controls physical deletion and defaults to 30 days.
       parameters:
         - $ref: "#/components/parameters/UploadID"
       responses:
@@ -848,13 +859,15 @@ paths:
         The path media ID is used to verify that the current user owns active
         media; the grant is not limited to that item. The recipient immediately
         gains access to all of the owner's current active media, and future
-        uploads become accessible without another share request.
+        uploads become accessible without another share request. A `read` grant
+        permits viewing, downloading, album membership, and favorites. A `write`
+        grant additionally permits moving active media to the owner's trash.
 
         Shared media contributes to the recipient's lists, downloads, manual
         albums, favorites, storage totals, and next nightly automatic-album
         reconciliation. The target must be another regular user; administrators
         and the owner cannot be recipients. Repeating the relationship is
-        idempotent.
+        idempotent; repeating it updates the permission.
       requestBody:
         required: true
         content:
@@ -1691,12 +1704,16 @@ components:
     ShareRequest:
       type: object
       additionalProperties: false
-      required: [username]
+      required: [username, permission]
       properties:
         username:
           type: string
           minLength: 1
           description: Case-sensitive username of a regular-user recipient.
+        permission:
+          type: string
+          enum: [read, write]
+          description: Recipient access. Write includes permission to move the owner's media to trash.
     AlbumInput:
       type: object
       additionalProperties: false
@@ -1758,7 +1775,7 @@ components:
     Media:
       type: object
       additionalProperties: false
-      required: [id, ownerId, ownerUsername, title, kind, favorite, fileName, mimeType, fileSize, sha256, createdAt, shared]
+      required: [id, ownerId, ownerUsername, title, kind, favorite, fileName, mimeType, fileSize, sha256, createdAt, shared, permission]
       properties:
         id:
           type: string
@@ -1799,6 +1816,10 @@ components:
         shared:
           type: boolean
           description: True when the current user is a recipient rather than the owner.
+        permission:
+          type: string
+          enum: [owner, read, write]
+          description: Effective access for the current user.
         deletedAt:
           type: string
           format: date-time

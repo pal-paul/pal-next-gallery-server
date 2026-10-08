@@ -16,6 +16,8 @@ type ApiMedia = {
   durationSeconds?: number
   latitude?: number
   longitude?: number
+  ownerUsername?: string
+  permission?: 'owner' | 'read' | 'write'
 }
 type ApiAlbum = Omit<Album, 'createdAt' | 'mediaIds'> & { createdAt: string; media?: ApiMedia[] }
 type ApiStorage = Pick<StorageStats, 'totalBytes' | 'photoBytes' | 'videoBytes' | 'photoCount' | 'videoCount'>
@@ -29,6 +31,7 @@ const normalizeAlbum = (album: ApiAlbum, mediaIds: GalleryID[] = []): Album => (
 
 const normalizeMedia = (media: ApiMedia): MediaItem => ({
   ...media,
+  permission: media.permission ?? 'owner',
   createdAt: media.createdAt.slice(0, 10),
   tags: [],
   duration: media.durationSeconds ? `${Math.floor(media.durationSeconds / 60)}:${String(media.durationSeconds % 60).padStart(2, '0')}` : undefined,
@@ -85,6 +88,9 @@ export const galleryApi = {
   },
   restoreMedia(mediaId: GalleryID) {
     return request<void>(`/media/files/${mediaId}/restore`, { method: 'PATCH' })
+  },
+  shareMedia(mediaId: GalleryID, username: string, permission: 'read' | 'write') {
+    return request<void>(`/media/files/${mediaId}/shares`, { method: 'POST', body: JSON.stringify({ username, permission }) })
   },
   async storage() {
     const storage = await request<ApiStorage>('/storage')

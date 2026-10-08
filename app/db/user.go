@@ -82,7 +82,11 @@ func (store *Postgres) ResetUserPassword(ctx context.Context, userID, passwordHa
 
 func (store *Postgres) ListAccessibleMedia(ctx context.Context, userID string) ([]userapp.Media, error) {
 	rows, err := store.pool.Query(ctx, `SELECT m.upload_id, m.owner_id, owner.username, m.filename, m.mime_type,
-		m.size, m.sha256, m.media_path, m.created_at, m.owner_id <> $1
+		m.size, m.sha256, m.media_path, m.created_at, m.owner_id <> $1,
+		CASE WHEN m.owner_id = $1 THEN 'owner' ELSE (
+			SELECT share.permission FROM user_media_shares share
+			WHERE share.owner_id = m.owner_id AND share.user_id = $1
+		) END
 		FROM media_uploads m JOIN users owner ON owner.id = m.owner_id
 		WHERE m.deleted_at IS NULL AND (m.owner_id = $1 OR EXISTS (
 			SELECT 1 FROM user_media_shares share
@@ -96,7 +100,7 @@ func (store *Postgres) ListAccessibleMedia(ctx context.Context, userID string) (
 	for rows.Next() {
 		var item userapp.Media
 		if err := rows.Scan(&item.UploadID, &item.OwnerID, &item.OwnerUsername, &item.Filename, &item.MimeType,
-			&item.Size, &item.SHA256, &item.MediaPath, &item.CreatedAt, &item.Shared); err != nil {
+			&item.Size, &item.SHA256, &item.MediaPath, &item.CreatedAt, &item.Shared, &item.Permission); err != nil {
 			return nil, err
 		}
 		media = append(media, item)
@@ -107,13 +111,17 @@ func (store *Postgres) ListAccessibleMedia(ctx context.Context, userID string) (
 func (store *Postgres) GetAccessibleMedia(ctx context.Context, uploadID, userID string) (userapp.Media, error) {
 	var item userapp.Media
 	err := store.pool.QueryRow(ctx, `SELECT m.upload_id, m.owner_id, owner.username, m.filename, m.mime_type,
-		m.size, m.sha256, m.media_path, m.created_at, m.owner_id <> $2
+		m.size, m.sha256, m.media_path, m.created_at, m.owner_id <> $2,
+		CASE WHEN m.owner_id = $2 THEN 'owner' ELSE (
+			SELECT share.permission FROM user_media_shares share
+			WHERE share.owner_id = m.owner_id AND share.user_id = $2
+		) END
 		FROM media_uploads m JOIN users owner ON owner.id = m.owner_id
 		WHERE m.upload_id = $1 AND m.deleted_at IS NULL AND (m.owner_id = $2 OR EXISTS (
 			SELECT 1 FROM user_media_shares share
 			WHERE share.owner_id = m.owner_id AND share.user_id = $2
 		))`, uploadID, userID).Scan(&item.UploadID, &item.OwnerID, &item.OwnerUsername, &item.Filename,
-		&item.MimeType, &item.Size, &item.SHA256, &item.MediaPath, &item.CreatedAt, &item.Shared)
+		&item.MimeType, &item.Size, &item.SHA256, &item.MediaPath, &item.CreatedAt, &item.Shared, &item.Permission)
 	return item, err
 }
 
@@ -126,12 +134,12 @@ func (store *Postgres) GetAccessibleThumbnailPath(ctx context.Context, uploadID,
 	return path, err
 }
 
-func (store *Postgres) ShareMedia(ctx context.Context, uploadID, ownerID, username string) error {
-	result, err := store.pool.Exec(ctx, `INSERT INTO user_media_shares (owner_id, user_id)
-		SELECT media.owner_id, target.id FROM media_uploads media JOIN users target ON target.username = $3
+func (store *Postgres) ShareMedia(ctx context.Context, uploadID, ownerID, username, permission string) error {
+	result, err := store.pool.Exec(ctx, `INSERT INTO user_media_shares (owner_id, user_id, permission)
+		SELECT media.owner_id, target.id, $4 FROM media_uploads media JOIN users target ON target.username = $3
 		WHERE media.upload_id = $1 AND media.owner_id = $2 AND media.deleted_at IS NULL
 		AND target.role = 'user' AND target.id <> $2
-		ON CONFLICT (owner_id, user_id) DO UPDATE SET created_at = user_media_shares.created_at`, uploadID, ownerID, username)
+		ON CONFLICT (owner_id, user_id) DO UPDATE SET permission = EXCLUDED.permission`, uploadID, ownerID, username, permission)
 	if err == nil && result.RowsAffected() == 0 {
 		return errors.New("owned media or target user not found")
 	}

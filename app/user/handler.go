@@ -180,7 +180,8 @@ func (service *Service) changeShare(context *gin.Context, remove bool) {
 		username = strings.TrimSpace(context.Query("username"))
 	}
 	var request struct {
-		Username string `json:"username"`
+		Username   string `json:"username"`
+		Permission string `json:"permission"`
 	}
 	if username == "" {
 		if err := decodeJSON(context, &request); err != nil || strings.TrimSpace(request.Username) == "" {
@@ -193,7 +194,12 @@ func (service *Service) changeShare(context *gin.Context, remove bool) {
 	if remove {
 		err = service.repository.UnshareMedia(context.Request.Context(), context.Param("id"), identity.ID, username)
 	} else {
-		err = service.repository.ShareMedia(context.Request.Context(), context.Param("id"), identity.ID, username)
+		permission := strings.ToLower(strings.TrimSpace(request.Permission))
+		if !validSharePermission(permission) {
+			context.JSON(http.StatusBadRequest, gin.H{"error": "permission must be read or write"})
+			return
+		}
+		err = service.repository.ShareMedia(context.Request.Context(), context.Param("id"), identity.ID, username, permission)
 	}
 	if err != nil {
 		context.JSON(http.StatusBadRequest, gin.H{"error": "unable to update share"})

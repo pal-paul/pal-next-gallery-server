@@ -1,13 +1,15 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { KeyRound, LoaderCircle, ShieldCheck } from 'lucide-react'
+import { KeyRound, LoaderCircle, ShieldCheck, UserRoundPlus } from 'lucide-react'
 import QRCode from 'qrcode'
 import { demoMode } from '../api/apiClient'
 import { authApi, type LoginChallenge, type Session } from '../api/authApi'
+import { setupApi } from '../api/setupApi'
 
 type Props = { children: (logout: () => Promise<void>) => ReactNode }
 
 export function AuthGate({ children }: Props) {
   const [checking, setChecking] = useState(!demoMode)
+  const [setupRequired, setSetupRequired] = useState(false)
   const [role, setRole] = useState<Session['role'] | undefined>(demoMode ? 'user' : undefined)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -16,10 +18,18 @@ export function AuthGate({ children }: Props) {
   const [qrCode, setQrCode] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [bootstrapUsername, setBootstrapUsername] = useState('')
+  const [bootstrapPassword, setBootstrapPassword] = useState('')
+  const [adminUsername, setAdminUsername] = useState('')
+  const [adminPassword, setAdminPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
 
   useEffect(() => {
     if (demoMode) return
-    authApi.session().then((session) => setRole(session.role)).catch(() => setRole(undefined)).finally(() => setChecking(false))
+    setupApi.status().then(async ({ required }) => {
+      setSetupRequired(required)
+      if (!required) setRole((await authApi.session()).role)
+    }).catch(() => setRole(undefined)).finally(() => setChecking(false))
   }, [])
 
   useEffect(() => {
@@ -43,6 +53,25 @@ export function AuthGate({ children }: Props) {
       setPassword('')
     } catch {
       setError('The username or password is incorrect.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const submitSetup = async (event: FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError('')
+    try {
+      await setupApi.create({ bootstrapUsername, bootstrapPassword, username: adminUsername, password: adminPassword, confirmPassword })
+      setSetupRequired(false)
+      setBootstrapUsername('')
+      setBootstrapPassword('')
+      setAdminPassword('')
+      setConfirmPassword('')
+      setUsername(adminUsername)
+    } catch {
+      setError('Setup failed. Check the bootstrap credentials and permanent password.')
     } finally {
       setSubmitting(false)
     }
@@ -73,6 +102,25 @@ export function AuthGate({ children }: Props) {
 
   if (checking || role === 'admin') return <div className="auth-loading"><LoaderCircle className="spin" size={26} /><span>{role === 'admin' ? 'Opening user configuration' : 'Opening gallery'}</span></div>
   if (role === 'user') return children(logout)
+
+  if (setupRequired) return (
+    <main className="auth-page">
+      <section className="auth-panel setup-panel">
+        <img className="auth-mark" src={`${import.meta.env.BASE_URL}icon.png`} alt="" />
+        <p className="auth-kicker">Next Gallery</p>
+        <h1>Create the first administrator</h1>
+        <form onSubmit={submitSetup}>
+          <label className="field-label">Bootstrap username<input autoComplete="username" value={bootstrapUsername} onChange={(event) => setBootstrapUsername(event.target.value)} required autoFocus /></label>
+          <label className="field-label">Bootstrap password<input type="password" autoComplete="current-password" value={bootstrapPassword} onChange={(event) => setBootstrapPassword(event.target.value)} required /></label>
+          <label className="field-label">Administrator username<input autoComplete="username" value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required /></label>
+          <label className="field-label">Permanent password<input type="password" autoComplete="new-password" minLength={12} value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required /></label>
+          <label className="field-label">Confirm permanent password<input type="password" autoComplete="new-password" minLength={12} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></label>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button className="primary-button auth-submit" disabled={submitting || adminPassword !== confirmPassword}><UserRoundPlus size={17} /> Create administrator</button>
+        </form>
+      </section>
+    </main>
+  )
 
   return (
     <main className="auth-page">

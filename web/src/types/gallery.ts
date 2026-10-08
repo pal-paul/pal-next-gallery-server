@@ -24,6 +24,8 @@ export type MediaItem = {
   camera?: string
   latitude?: number
   longitude?: number
+  ownerUsername?: string
+  permission?: 'owner' | 'read' | 'write'
 }
 
 export type StorageStats = {

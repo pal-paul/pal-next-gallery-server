@@ -17,3 +17,21 @@ func TestSchemaUpgradesExistingAlbumsTable(t *testing.T) {
 		}
 	}
 }
+
+func TestSchemaUpgradesSharesWithReadPermission(t *testing.T) {
+	for _, statement := range []string{
+		"ALTER TABLE user_media_shares ADD COLUMN IF NOT EXISTS permission TEXT NOT NULL DEFAULT 'read'",
+		"CHECK (permission IN ('read', 'write'))",
+		"trash_retention_days INTEGER NOT NULL DEFAULT 30",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("schema does not contain %q", statement)
+		}
+	}
+}
+
+func TestSharedTrashRequiresWritePermission(t *testing.T) {
+	if !strings.Contains(trashMediaQuery, "share.permission = 'write'") {
+		t.Fatal("shared trash query does not require write permission")
+	}
+}

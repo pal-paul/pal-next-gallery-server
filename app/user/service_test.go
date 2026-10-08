@@ -17,6 +17,8 @@ type memoryRepository struct {
 	created          NewAccount
 	folder           string
 	passwordHash     string
+	sharedUsername   string
+	sharePermission  string
 	unsharedUsername string
 }
 
@@ -49,7 +51,9 @@ func (repository *memoryRepository) GetAccessibleMedia(context.Context, string, 
 func (repository *memoryRepository) GetAccessibleThumbnailPath(context.Context, string, string) (string, error) {
 	return "", nil
 }
-func (repository *memoryRepository) ShareMedia(context.Context, string, string, string) error {
+func (repository *memoryRepository) ShareMedia(_ context.Context, _, _, username, permission string) error {
+	repository.sharedUsername = username
+	repository.sharePermission = permission
 	return nil
 }
 func (repository *memoryRepository) UnshareMedia(_ context.Context, _, _, username string) error {
@@ -129,6 +133,42 @@ func TestUnshareAcceptsUsernameQueryAndLegacyBody(t *testing.T) {
 
 			if context.Writer.Status() != http.StatusNoContent || repository.unsharedUsername != "bob" {
 				t.Fatalf("status=%d username=%q", context.Writer.Status(), repository.unsharedUsername)
+			}
+		})
+	}
+}
+
+func TestShareRequiresReadOrWritePermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name       string
+		body       string
+		status     int
+		permission string
+	}{
+		{name: "read", body: `{"username":"bob","permission":"read"}`, status: http.StatusNoContent, permission: "read"},
+		{name: "write", body: `{"username":"bob","permission":"write"}`, status: http.StatusNoContent, permission: "write"},
+		{name: "missing", body: `{"username":"bob"}`, status: http.StatusBadRequest},
+		{name: "invalid", body: `{"username":"bob","permission":"owner"}`, status: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &memoryRepository{}
+			service := NewService(repository, "PAL Test", t.TempDir())
+			request := httptest.NewRequest(http.MethodPost, "/media/files/media-id/share", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(response)
+			context.Request = request
+			context.Params = gin.Params{{Key: "id", Value: "media-id"}}
+			context.Set(auth.UserContextKey, auth.User{ID: "owner-id", Role: "user"})
+
+			service.ShareMedia(context)
+
+			if context.Writer.Status() != test.status || repository.sharePermission != test.permission {
+				t.Fatalf("status=%d permission=%q", context.Writer.Status(), repository.sharePermission)
+			}
+			if test.permission != "" && repository.sharedUsername != "bob" {
+				t.Fatalf("username=%q", repository.sharedUsername)
 			}
 		})
 	}

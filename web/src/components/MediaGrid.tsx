@@ -1,4 +1,4 @@
-import { ArchiveRestore, Check, Circle, Ellipsis, Film, FolderMinus, Heart, Image, ImageUp, Play, Trash2, X } from 'lucide-react'
+import { ArchiveRestore, Check, Circle, Ellipsis, Film, FolderMinus, Heart, Image, ImageUp, Play, Share2, Trash2, X } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useEffect, useState } from 'react'
 import type { MediaItem } from '../types/gallery'
@@ -20,10 +20,11 @@ type Props = {
   onTrash: (id: string) => void
   onDelete: (id: string) => void
   onRestore: (id: string) => void
+  onShare: (id: string) => void
   onView: (id: string) => void
 }
 
-export function MediaGrid({ media, layout = 'grid', selected, canRemove, canDelete, inTrash, coverMediaId, onToggle, onRemove, onSetCover, onFavorite, onTrash, onDelete, onRestore, onView }: Props) {
+export function MediaGrid({ media, layout = 'grid', selected, canRemove, canDelete, inTrash, coverMediaId, onToggle, onRemove, onSetCover, onFavorite, onTrash, onDelete, onRestore, onShare, onView }: Props) {
   const [actionMenuId, setActionMenuId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export function MediaGrid({ media, layout = 'grid', selected, canRemove, canDele
     <section className={`media-grid ${layout === 'mosaic' ? 'album-mosaic' : ''}`} aria-live="polite">
       {media.map((item, index) => {
         const isSelected = selected.includes(item.id)
+        const permission = item.permission ?? 'owner'
         return (
           <article className={`media-card ${isSelected ? 'selected' : ''} ${actionMenuId === item.id ? 'menu-open' : ''}`} key={item.id} style={{ '--delay': `${index * 35}ms` } as CSSProperties}>
             <div className="media-thumb">
@@ -69,14 +71,15 @@ export function MediaGrid({ media, layout = 'grid', selected, canRemove, canDele
                   {!inTrash && <button role="menuitem" onClick={() => runAction(() => onFavorite(item.id, !item.favorite))}><Heart size={17} fill={item.favorite ? 'currentColor' : 'none'} /> {item.favorite ? 'Remove favorite' : 'Favorite'}</button>}
                   {canRemove && coverMediaId !== item.id && <button role="menuitem" onClick={() => runAction(() => onSetCover(item.id))}><ImageUp size={17} /> Set as cover</button>}
                   {canRemove && <button role="menuitem" onClick={() => runAction(() => onRemove(item.id))}><FolderMinus size={17} /> Remove from album</button>}
-                  {!inTrash && <button className="destructive" role="menuitem" onClick={() => runAction(() => onTrash(item.id))}><Trash2 size={17} /> Move to deleted</button>}
+                  {!inTrash && permission === 'owner' && <button role="menuitem" onClick={() => runAction(() => onShare(item.id))}><Share2 size={17} /> Share</button>}
+                  {!inTrash && permission !== 'read' && <button className="destructive" role="menuitem" onClick={() => runAction(() => onTrash(item.id))}><Trash2 size={17} /> Move to deleted</button>}
                   {canDelete && <button className="destructive" role="menuitem" onClick={() => runAction(() => onDelete(item.id))}><X size={17} /> Delete permanently</button>}
                   {inTrash && <button role="menuitem" onClick={() => runAction(() => onRestore(item.id))}><ArchiveRestore size={17} /> Restore</button>}
                 </div>
               )}
             </div>
             <div className="media-meta">
-              <div><strong>{item.title}</strong><span>{formatDate(item.createdAt)}</span></div>
+              <div><strong>{item.title}</strong><span>{permission === 'owner' ? formatDate(item.createdAt) : `Shared by ${item.ownerUsername} · ${permission === 'write' ? 'Write' : 'Read'} access`}</span></div>
               <span className="kind-icon" title={item.kind}>{item.kind === 'video' ? <Film size={15} /> : <Image size={15} />}</span>
             </div>
           </article>

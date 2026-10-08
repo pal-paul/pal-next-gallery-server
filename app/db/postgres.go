@@ -130,10 +130,14 @@ CREATE TABLE IF NOT EXISTS media_shares (
 CREATE TABLE IF NOT EXISTS user_media_shares (
 	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	permission TEXT NOT NULL DEFAULT 'read' CHECK (permission IN ('read', 'write')),
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (owner_id, user_id),
 	CHECK (owner_id <> user_id)
 );
+ALTER TABLE user_media_shares ADD COLUMN IF NOT EXISTS permission TEXT NOT NULL DEFAULT 'read';
+ALTER TABLE user_media_shares DROP CONSTRAINT IF EXISTS user_media_shares_permission_check;
+ALTER TABLE user_media_shares ADD CONSTRAINT user_media_shares_permission_check CHECK (permission IN ('read', 'write'));
 INSERT INTO user_media_shares (owner_id, user_id)
 	SELECT DISTINCT media.owner_id, share.user_id
 	FROM media_shares share

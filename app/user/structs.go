@@ -33,4 +33,5 @@ type Media struct {
 	MediaPath     string    `json:"-"`
 	CreatedAt     time.Time `json:"createdAt"`
 	Shared        bool      `json:"shared"`
+	Permission    string    `json:"permission"`
 }

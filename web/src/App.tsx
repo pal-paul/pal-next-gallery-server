@@ -13,6 +13,7 @@ import { MediaMap } from './components/MediaMap'
 import { MediaViewer } from './components/MediaViewer'
 import { PageHeading } from './components/PageHeading'
 import { SelectionBar } from './components/SelectionBar'
+import { ShareMediaDialog, type SharePermission } from './components/ShareMediaDialog'
 import { StorageDashboard } from './components/StorageDashboard'
 import { albumSeed, mediaSeed } from './data/gallerySeed'
 import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaItem, MediaSort, StorageStats } from './types/gallery'
@@ -41,6 +42,9 @@ function App({ onLogout }: Props) {
   const [editAlbumName, setEditAlbumName] = useState('')
   const [editAlbumDescription, setEditAlbumDescription] = useState('')
   const [editCoverMediaId, setEditCoverMediaId] = useState<GalleryID | undefined>()
+  const [shareMediaId, setShareMediaId] = useState<GalleryID | null>(null)
+  const [shareUsername, setShareUsername] = useState('')
+  const [sharePermission, setSharePermission] = useState<SharePermission>('read')
   const deferredQuery = useDeferredValue(query.toLowerCase().trim())
 
   useEffect(() => {
@@ -217,6 +221,18 @@ function App({ onLogout }: Props) {
     setMedia((current) => current.map((item) => item.id === mediaId ? { ...item, deletedAt: undefined } : item))
   }
 
+  const openShare = (mediaId: GalleryID) => {
+    setShareMediaId(mediaId)
+    setShareUsername('')
+    setSharePermission('read')
+  }
+
+  const shareMedia = async () => {
+    if (!shareMediaId || !shareUsername.trim()) return
+    if (connected) await galleryApi.shareMedia(shareMediaId, shareUsername.trim(), sharePermission)
+    setShareMediaId(null)
+  }
+
   const deleteMedia = async (mediaId: GalleryID) => {
     const item = media.find((candidate) => candidate.id === mediaId)
     if (!item || !window.confirm(`Permanently delete ${item.title}? This cannot be undone.`)) return
@@ -267,13 +283,14 @@ function App({ onLogout }: Props) {
           ? <AlbumGrid albums={visibleAlbums} onOpen={(id) => void openAlbum(id)} onMove={moveAlbum} />
           : view === 'map' ? <MediaMap media={visibleMedia} onView={setViewerMediaId} />
           : view === 'storage' ? storageStats && <StorageDashboard stats={storageStats} />
-          : activeAlbum ? <AlbumDetailGallery album={activeAlbum} media={visibleMedia} selected={selected} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onView={setViewerMediaId} />
-          : <MediaTimeline media={visibleMedia} grouping={grouping} selected={selected} canRemove={false} canDelete={view === 'media'} inTrash={view === 'trash'} coverMediaId={undefined} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onView={setViewerMediaId} />}
+          : activeAlbum ? <AlbumDetailGallery album={activeAlbum} media={visibleMedia} selected={selected} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onShare={openShare} onView={setViewerMediaId} />
+          : <MediaTimeline media={visibleMedia} grouping={grouping} selected={selected} canRemove={false} canDelete={view === 'media'} inTrash={view === 'trash'} coverMediaId={undefined} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onShare={openShare} onView={setViewerMediaId} />}
         {!['map', 'storage'].includes(view) && (view === 'albums' ? visibleAlbums.length : visibleMedia.length) === 0 && (
           <section className="empty-state"><Search size={28} /><h2>No memories found</h2><p>Try a different title, tag, date, or filter.</p></section>
         )}
       </main>
       <CreateAlbumDialog open={showCreate} name={newAlbumName} onNameChange={setNewAlbumName} onClose={() => setShowCreate(false)} onCreate={createAlbum} />
+      <ShareMediaDialog open={Boolean(shareMediaId)} username={shareUsername} permission={sharePermission} onUsernameChange={setShareUsername} onPermissionChange={setSharePermission} onClose={() => setShareMediaId(null)} onShare={() => void shareMedia()} />
       {activeAlbum && <EditAlbumDialog open={showEditAlbum} album={activeAlbum} media={media} name={editAlbumName} description={editAlbumDescription} coverMediaId={editCoverMediaId} onNameChange={setEditAlbumName} onDescriptionChange={setEditAlbumDescription} onCoverChange={setEditCoverMediaId} onClose={() => setShowEditAlbum(false)} onSave={saveAlbumEdits} />}
       {viewerItem && <MediaViewer item={viewerItem} hasMultiple={visibleMedia.length > 1} onClose={() => setViewerMediaId(null)} onPrevious={() => showViewerItem(-1)} onNext={() => showViewerItem(1)} />}
     </div>

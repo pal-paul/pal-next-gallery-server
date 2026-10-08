@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -69,28 +68,31 @@ func TestSetupPageLifecycle(t *testing.T) {
 	router := gin.New()
 	service.RegisterRoutes(router)
 
-	page := httptest.NewRecorder()
-	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Set up administrator") {
-		t.Fatalf("unexpected setup page: %d %q", page.Code, page.Body.String())
+	status := httptest.NewRecorder()
+	router.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/setup/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"required":true`) {
+		t.Fatalf("unexpected setup status: %d %q", status.Code, status.Body.String())
 	}
 
-	form := url.Values{
-		"bootstrapUsername": {"bootstrap"}, "bootstrapPassword": {"bootstrap-password"},
-		"username": {"owner"}, "password": {"permanent-password"}, "confirmPassword": {"permanent-password"},
-	}
-	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	body := `{"bootstrapUsername":"bootstrap","bootstrapPassword":"bootstrap-password","username":"owner","password":"permanent-password","confirmPassword":"permanent-password"}`
+	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), "Administrator configured") {
+	if response.Code != http.StatusCreated {
 		t.Fatalf("unexpected setup response: %d %q", response.Code, response.Body.String())
 	}
 
 	closed := httptest.NewRecorder()
-	router.ServeHTTP(closed, httptest.NewRequest(http.MethodGet, "/setup", nil))
-	if closed.Code != http.StatusNotFound {
-		t.Fatalf("expected setup page to close, got %d", closed.Code)
+	router.ServeHTTP(closed, httptest.NewRequest(http.MethodGet, "/setup/status", nil))
+	if closed.Code != http.StatusOK || !strings.Contains(closed.Body.String(), `"required":false`) {
+		t.Fatalf("expected setup to close, got %d %q", closed.Code, closed.Body.String())
+	}
+
+	page := httptest.NewRecorder()
+	router.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	if page.Code != http.StatusSeeOther || page.Header().Get("Location") != "/" {
+		t.Fatalf("expected setup route to open the web app, got %d %q", page.Code, page.Header().Get("Location"))
 	}
 }
 
