@@ -27,7 +27,7 @@ func (store *Postgres) ListAlbums(ctx context.Context, userID, search string) ([
 				AND (search_m.owner_id = $1 OR search_s.user_id IS NOT NULL)
 				AND search_m.filename ILIKE '%' || $2 || '%'))
 		GROUP BY a.id
-		ORDER BY a.position ASC NULLS LAST, a.created_at DESC`, strings.TrimSpace(search))
+		ORDER BY a.position ASC NULLS LAST, a.created_at DESC`, userID, strings.TrimSpace(search))
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func (store *Postgres) GetAlbum(ctx context.Context, albumID, userID string) (ga
 		LEFT JOIN user_media_shares s ON s.owner_id = m.owner_id AND s.user_id = $2
 		LEFT JOIN media_preferences p ON p.upload_id = m.upload_id AND p.user_id = $2
 		WHERE am.album_id = $1 AND m.deleted_at IS NULL AND (m.owner_id = $2 OR s.user_id IS NOT NULL)
-		ORDER BY m.created_at DESC`, albumID, userID)
+		ORDER BY COALESCE(exif.captured_at, m.created_at) DESC`, albumID, userID)
 	if err != nil {
 		return album, err
 	}
@@ -173,8 +173,10 @@ func (store *Postgres) SetAlbumCover(ctx context.Context, albumID, userID, media
 const mediaSelect = `SELECT m.upload_id, m.owner_id, owner.username,
 	regexp_replace(m.filename, '\.[^.]+$', ''),
 	CASE WHEN m.mime_type LIKE 'video/%' THEN 'video' ELSE 'photo' END,
-	COALESCE(p.favorite, FALSE), m.filename, m.mime_type, m.size, m.sha256, m.created_at,
-	m.deleted_at, m.owner_id <> $2, COALESCE(m.thumbnail_path, ''), m.width, m.height,
+	COALESCE(p.favorite, FALSE), m.filename, m.mime_type, m.size, m.sha256,
+	COALESCE(exif.captured_at, m.created_at),
+	m.deleted_at, m.owner_id <> $2, CASE WHEN m.owner_id = $2 THEN 'owner' ELSE s.permission END,
+	COALESCE(m.thumbnail_path, ''), m.width, m.height,
 	m.video_duration_seconds, exif.captured_at, exif.latitude, exif.longitude
 	FROM media_uploads m JOIN users owner ON owner.id = m.owner_id
 	LEFT JOIN media_exif exif ON exif.upload_id = m.upload_id `
@@ -193,9 +195,9 @@ func (store *Postgres) ListMedia(ctx context.Context, userID string, filter gall
 			(exif.latitude IS NOT NULL AND exif.longitude IS NOT NULL AND
 			6371 * acos(LEAST(1, cos(radians($8)) * cos(radians(exif.latitude)) *
 			cos(radians(exif.longitude) - radians($9)) + sin(radians($8)) * sin(radians(exif.latitude)))) <= $10))
-		ORDER BY CASE WHEN $5 = 'oldest' THEN m.created_at END ASC,
+		ORDER BY CASE WHEN $5 = 'oldest' THEN COALESCE(exif.captured_at, m.created_at) END ASC,
 			CASE WHEN $5 = 'title' THEN lower(m.filename) END ASC,
-			CASE WHEN $5 NOT IN ('oldest', 'title') THEN m.created_at END DESC`,
+			CASE WHEN $5 NOT IN ('oldest', 'title') THEN COALESCE(exif.captured_at, m.created_at) END DESC`,
 		strings.TrimSpace(filter.Search), userID, filter.Trash, filter.Kind, filter.Sort,
 		filter.CapturedAfter, filter.CapturedBefore, filter.Latitude, filter.Longitude, filter.RadiusKM)
 	if err != nil {
@@ -215,10 +217,17 @@ func (store *Postgres) SetFavorite(ctx context.Context, mediaID, userID string, 
 }
 
 func (store *Postgres) TrashMedia(ctx context.Context, mediaID, userID string) error {
-	result, err := store.pool.Exec(ctx, `UPDATE media_uploads SET deleted_at = now()
-		WHERE upload_id = $1 AND owner_id = $2 AND deleted_at IS NULL`, mediaID, userID)
+	result, err := store.pool.Exec(ctx, trashMediaQuery, mediaID, userID)
 	return changed(result.RowsAffected(), err)
 }
+
+const trashMediaQuery = `UPDATE media_uploads media SET deleted_at = now()
+		WHERE media.upload_id = $1 AND media.deleted_at IS NULL AND (
+			media.owner_id = $2 OR EXISTS (
+				SELECT 1 FROM user_media_shares share
+				WHERE share.owner_id = media.owner_id AND share.user_id = $2 AND share.permission = 'write'
+			)
+		)`
 
 func (store *Postgres) RestoreMedia(ctx context.Context, mediaID, userID string) error {
 	result, err := store.pool.Exec(ctx, `UPDATE media_uploads SET deleted_at = NULL
@@ -264,7 +273,7 @@ func scanGalleryMedia(rows mediaRows) ([]gallery.Media, error) {
 		var thumbnailPath string
 		if err := rows.Scan(&item.ID, &item.OwnerID, &item.OwnerUsername, &item.Title, &item.Kind,
 			&item.Favorite, &item.Filename, &item.MimeType, &item.Size, &item.SHA256,
-			&item.CreatedAt, &item.DeletedAt, &item.Shared, &thumbnailPath, &item.Width, &item.Height,
+			&item.CreatedAt, &item.DeletedAt, &item.Shared, &item.Permission, &thumbnailPath, &item.Width, &item.Height,
 			&item.Duration, &item.CapturedAt, &item.Latitude, &item.Longitude); err != nil {
 			return nil, err
 		}

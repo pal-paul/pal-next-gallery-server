@@ -31,6 +31,7 @@ type Media struct {
 	CreatedAt     time.Time  `json:"createdAt"`
 	DeletedAt     *time.Time `json:"deletedAt,omitempty"`
 	Shared        bool       `json:"shared"`
+	Permission    string     `json:"permission"`
 	ThumbnailURL  string     `json:"thumbnailUrl,omitempty"`
 	Width         *int       `json:"width,omitempty"`
 	Height        *int       `json:"height,omitempty"`

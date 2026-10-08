@@ -493,6 +493,14 @@ main { width: min(1400px, calc(100% - 48px)); margin: 0 auto; padding: 55px 0 ma
 
 .auth-page { width: 100%; min-height: 100svh; padding: 48px 20px; display: grid; place-items: center; box-sizing: border-box; }
 .auth-panel { width: min(390px, 100%); padding: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--white); box-shadow: var(--shadow-soft); text-align: left; }
+.auth-panel.setup-panel { width: min(460px, 100%); }
+.permission-options { margin: 22px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; border: 0; }
+.permission-options legend { margin-bottom: 8px; color: var(--ink); font-size: 12px; font-weight: 700; }
+.permission-options label { min-width: 0; padding: 12px; display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.permission-options label.selected { border-color: var(--moss); box-shadow: 0 0 0 2px rgba(23, 111, 209, 0.12); }
+.permission-options input { margin: 3px 0 0; accent-color: var(--moss); }
+.permission-options span { display: grid; gap: 3px; }
+.permission-options small { color: var(--muted); line-height: 1.4; }
 .auth-mark { width: 48px; height: 48px; border-radius: 10px; }
 .auth-kicker { margin: 20px 0 6px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: 0; text-transform: uppercase; }
 .auth-panel h1 { margin: 0 0 28px; color: var(--ink); font-family: var(--font-app); font-size: 30px; letter-spacing: 0; }
@@ -501,6 +509,7 @@ main { width: min(1400px, calc(100% - 48px)); margin: 0 auto; padding: 55px 0 ma
 .auth-submit { width: 100%; margin-top: 24px; justify-content: center; }
 .auth-submit:disabled { cursor: wait; opacity: .55; }
 .auth-error { margin-top: 14px; color: #a02f2f; font-size: 12px; }
+.dialog-error { margin: 14px 0 0; color: #a02f2f; font-size: 12px; }
 .auth-loading { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
 .spin { animation: spin .9s linear infinite; }
 .totp-setup { padding: 16px; border: 1px solid var(--line); background: var(--paper); text-align: center; }
@@ -525,6 +534,7 @@ main { width: min(1400px, calc(100% - 48px)); margin: 0 auto; padding: 55px 0 ma
 @media (max-width: 680px) {
   .auth-page { padding: max(24px, env(safe-area-inset-top)) 15px max(24px, env(safe-area-inset-bottom)); }
   .auth-panel { padding: 26px 22px; }
+  .permission-options { grid-template-columns: 1fr; }
   .topbar { height: calc(64px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) max(15px, env(safe-area-inset-right)) 0 max(15px, env(safe-area-inset-left)); gap: 12px; }
   .brand { gap: 7px; font-size: 18px; }
   .brand-mark { width: 36px; height: 36px; border-radius: 9px; }

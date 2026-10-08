@@ -1,95 +1,80 @@
 autolabeler:
-  - label: 'documentation'
+  - label: "chore"
     files:
-      - '*.md'
-      - 'docs/**/*'
+      - "*.md"
+      - "docs/**/*.md"
     branch:
       - '/docs{0,1}\/.+/'
-  - label: 'bug'
+  - label: "bug"
     branch:
       - '/fix\/.+/'
       - '/hotfix\/.+/'
       - '/bug\/.+/'
     title:
-      - '/fix/i'
-      - '/bug/i'
-  - label: 'enhancement'
+      - "/^fix(\\(.+\\))?:/i"
+  - label: "enhancement"
     branch:
       - '/feature\/.+/'
+      - '/epic\/.+/'
       - '/story\/.+/'
       - '/enhance\/.+/'
-    body:
-      - '/UGC-[0-9]{1,4}/'
-
-name-template: 'v$RESOLVED_VERSION'
-tag-template: 'v$RESOLVED_VERSION'
-
+name-template: "v$RESOLVED_VERSION 🌈"
+tag-template: "v$RESOLVED_VERSION"
 categories:
-  - title: '🚀 Features'
+  - title: "🚀 Features"
     labels:
-      - 'feature'
-      - 'enhancement'
-      - 'story'
-  - title: '🐛 Bug Fixes'
+      - "feature"
+      - "enhancement"
+  - title: "🐛 Bug Fixes"
     labels:
-      - 'fix'
-      - 'bugfix'
-      - 'bug'
-      - 'hotfix'
-  - title: '🧰 Maintenance'
-    labels:
-      - 'chore'
-      - 'maintenance'
-      - 'dependencies'
-  - title: '📚 Documentation'
-    labels:
-      - 'documentation'
-      - 'docs'
-  - title: '⚡ Performance'
-    labels:
-      - 'performance'
-      - 'perf'
-  - title: '🔒 Security'
-    labels:
-      - 'security'
+      - "fix"
+      - "bugfix"
+      - "bug"
+    exclude-labels:
+      - "feature"
+      - "enhancement"
+  - title: "🧰 Maintenance"
+    label: "chore"
+    exclude-labels:
+      - "feature"
+      - "enhancement"
+      - "fix"
+      - "bugfix"
+      - "bug"
+change-template: |-
+  ### $TITLE @$AUTHOR (#$NUMBER)
 
-change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+  <!-- PR_BODY_START -->
+  $BODY
+  <!-- PR_BODY_END -->
 change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
-
+replacers:
+  - search: '/<!-- PR_BODY_START -->[\s\S]*?<!-- RELEASE_NOTES_START -->\s*([\s\S]*?)\s*<!-- RELEASE_NOTES_END -->[\s\S]*?<!-- PR_BODY_END -->/g'
+    replace: '$1'
+  - search: '/<!-- PR_BODY_START -->[\s\S]*?<!-- PR_BODY_END -->/g'
+    replace: ''
+  - search: '/^[ \t]*<!--[^>]*-->[ \t]*\r?\n?/gm'
+    replace: ''
+  - search: '/\n{3,}/g'
+    replace: '\n\n'
 version-resolver:
   major:
     labels:
-      - 'major'
-      - 'breaking'
+      - "major"
+      - "breaking"
   minor:
     labels:
-      - 'minor'
-      - 'feature'
-      - 'enhancement'
-      - 'story'
+      - "minor"
+      - "feature"
+      - "enhancement"
   patch:
     labels:
-      - 'patch'
-      - 'fix'
-      - 'bugfix'
-      - 'bug'
-      - 'hotfix'
-      - 'maintenance'
-      - 'docs'
-      - 'documentation'
-      - 'dependencies'
-      - 'security'
+      - "patch"
+      - "fix"
+      - "bugfix"
+      - "bug"
+      - "chore"
   default: patch
-
 template: |
-  ## What's Changed
-
+  ## Changes
   $CHANGES
-
-  ## 👥 Contributors
-
-  $CONTRIBUTORS
-
-  ## 📝 Notes
-
-  For the full list of changes, see the [comparison view](https://github.com/pal-paul/pal-next-gallery-server/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION).

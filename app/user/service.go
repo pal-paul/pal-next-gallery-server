@@ -32,8 +32,12 @@ type Repository interface {
 	ListAccessibleMedia(context.Context, string) ([]Media, error)
 	GetAccessibleMedia(context.Context, string, string) (Media, error)
 	GetAccessibleThumbnailPath(context.Context, string, string) (string, error)
-	ShareMedia(context.Context, string, string, string) error
+	ShareMedia(context.Context, string, string, string, string) error
 	UnshareMedia(context.Context, string, string, string) error
+}
+
+func validSharePermission(permission string) bool {
+	return permission == "read" || permission == "write"
 }
 
 func (service *Service) SetTrashRetention(ctx context.Context, actorRole, userID string, days int) error {

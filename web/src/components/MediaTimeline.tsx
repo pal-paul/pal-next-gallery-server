@@ -16,6 +16,7 @@ type Props = {
   onTrash: (id: string) => void
   onDelete: (id: string) => void
   onRestore: (id: string) => void
+  onShare: (id: string) => void
   onView: (id: string) => void
 }
 
