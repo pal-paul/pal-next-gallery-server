@@ -196,7 +196,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [bootstrapUsername, bootstrapPassword, username, password, confirmPassword]
+              required:
+                [
+                  bootstrapUsername,
+                  bootstrapPassword,
+                  username,
+                  password,
+                  confirmPassword,
+                ]
               properties:
                 bootstrapUsername:
                   type: string
@@ -696,7 +703,7 @@ paths:
             enum: [photo, video]
         - name: sort
           in: query
-          description: Sort by completion time or filename-derived title.
+          description: Sort by capture time, falling back to upload completion time, or by filename-derived title.
           schema:
             type: string
             enum: [newest, oldest, title]
@@ -1636,7 +1643,16 @@ components:
     User:
       type: object
       additionalProperties: false
-      required: [id, username, role, totpEnabled, storageQuotaBytes, storageUsedBytes, trashRetentionDays]
+      required:
+        [
+          id,
+          username,
+          role,
+          totpEnabled,
+          storageQuotaBytes,
+          storageUsedBytes,
+          trashRetentionDays,
+        ]
       properties:
         id:
           type: string
@@ -1740,7 +1756,8 @@ components:
     Album:
       type: object
       additionalProperties: false
-      required: [id, ownerId, title, description, automatic, createdAt, itemCount]
+      required:
+        [id, ownerId, title, description, automatic, createdAt, itemCount]
       properties:
         id:
           type: string
@@ -1775,7 +1792,22 @@ components:
     Media:
       type: object
       additionalProperties: false
-      required: [id, ownerId, ownerUsername, title, kind, favorite, fileName, mimeType, fileSize, sha256, createdAt, shared, permission]
+      required:
+        [
+          id,
+          ownerId,
+          ownerUsername,
+          title,
+          kind,
+          favorite,
+          fileName,
+          mimeType,
+          fileSize,
+          sha256,
+          createdAt,
+          shared,
+          permission,
+        ]
       properties:
         id:
           type: string
@@ -1812,7 +1844,7 @@ components:
         createdAt:
           type: string
           format: date-time
-          description: Upload completion timestamp used for gallery ordering and automatic album dates.
+          description: Effective media date used for gallery ordering; the captured timestamp when available, otherwise the upload completion timestamp.
         shared:
           type: boolean
           description: True when the current user is a recipient rather than the owner.
@@ -2193,7 +2225,17 @@ components:
     UploadBatch:
       type: object
       additionalProperties: false
-      required: [id, name, expectedFiles, expectedBytes, completedFiles, completedBytes, status, createdAt]
+      required:
+        [
+          id,
+          name,
+          expectedFiles,
+          expectedBytes,
+          completedFiles,
+          completedBytes,
+          status,
+          createdAt,
+        ]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }

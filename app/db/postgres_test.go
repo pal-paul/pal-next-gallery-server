@@ -35,3 +35,10 @@ func TestSharedTrashRequiresWritePermission(t *testing.T) {
 		t.Fatal("shared trash query does not require write permission")
 	}
 }
+
+func TestGalleryUsesCaptureTimeWithUploadFallback(t *testing.T) {
+	effectiveDate := "COALESCE(exif.captured_at, m.created_at)"
+	if !strings.Contains(mediaSelect, effectiveDate) {
+		t.Fatal("gallery media date does not prefer capture time")
+	}
+}
