@@ -10,7 +10,11 @@ services:
     ports:
       - "5510:5432"
     volumes:
-      - /volume1/docker/next-gallery-server/postgres:/var/lib/postgresql/data
+      - type: bind
+        source: /volume1/docker/next-gallery-server/postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -24,7 +28,7 @@ services:
     restart: unless-stopped
 
   server:
-    image: ghcr.io/pal-paul/pal-next-gallery-server:latest
+    image: ghcr.io/pal-paul/pal-next-gallery-server:1.1.0
     environment:
       ENV_GIN_MODE: release
       ENV_PORT: "8081"
@@ -41,8 +45,8 @@ services:
       ENV_HTTP_READ_TIMEOUT: 5m
       ENV_CLEANUP_INTERVAL: 1h
       ENV_UPLOAD_RETENTION: 168h
-      ENV_CORS_ALLOWED_ORIGINS: http://localhost:3000
-      ENV_TRUSTED_PROXIES: ""
+      ENV_CORS_ALLOWED_ORIGINS: "https://gallery.palpaul.com,http://192.168.0.105:8013"
+      ENV_TRUSTED_PROXIES: 172.30.0.2/32
       ENV_ISSUER: "<change-me>"
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
@@ -52,9 +56,21 @@ services:
     ports:
       - "8013:8081"
     volumes:
-      - /volume1/media/gallery:/data/gallery
-      - /volume1/media/tmp:/data/tmp
-      - /volume1/media/import:/data/import
+      - type: bind
+        source: /volume1/media/gallery
+        target: /data/gallery
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /volume1/media/tmp
+        target: /data/tmp
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /volume1/media/import
+        target: /data/import
+        bind:
+          create_host_path: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,4 +85,31 @@ services:
       options:
         max-size: 10m
         max-file: "5"
+    networks:
+      - default
+      - tunnel
     restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "<change-me>"
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      tunnel:
+        ipv4_address: 172.30.0.2
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: unless-stopped
+
+networks:
+  tunnel:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
