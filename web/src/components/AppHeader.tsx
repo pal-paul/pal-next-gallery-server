@@ -1,22 +1,26 @@
-import { BarChart3, EllipsisVertical, Heart, Images, LayoutGrid, LogOut, Map, Plus, Trash2 } from 'lucide-react'
+import { BarChart3, EllipsisVertical, Heart, Images, LayoutGrid, LogOut, Map, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { LibraryView } from '../types/gallery'
+import { UploadButton } from './UploadButton'
 
 type Props = {
   view: LibraryView
   showingAlbum: boolean
   albumTitle?: string
   onShowAlbums: () => void
+    onShowMoments: () => void
   onShowMedia: () => void
   onShowFavorites: () => void
   onShowTrash: () => void
   onShowMap: () => void
   onShowStorage: () => void
   onCreateAlbum: () => void
+  canUpload: boolean
+  onUploaded: () => Promise<void>
   onLogout: () => void
 }
 
-export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShowMedia, onShowFavorites, onShowTrash, onShowMap, onShowStorage, onCreateAlbum, onLogout }: Props) {
+export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShowMoments, onShowMedia, onShowFavorites, onShowTrash, onShowMap, onShowStorage, onCreateAlbum, canUpload, onUploaded, onLogout }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const currentLabel = albumTitle ?? (view === 'favorites' ? 'Favorites' : view === 'trash' ? 'Trash' : view === 'map' ? 'Map' : view === 'storage' ? 'Storage' : view === 'media' && !showingAlbum ? 'All' : 'Albums')
@@ -49,6 +53,7 @@ export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShow
           <span>{showingAlbum ? currentLabel : 'Next Gallery'}</span>
         </button>
         <div className="top-actions">
+          <UploadButton disabled={!canUpload} onUploaded={onUploaded} />
           {view === 'albums' && <button className="header-action" onClick={onCreateAlbum} aria-label="New album" title="New album"><Plus size={22} /></button>}
           <div className="options-menu" ref={menuRef}>
             <button className="options-trigger" onClick={() => setMenuOpen((open) => !open)} aria-label="Options" title="Options" aria-expanded={menuOpen} aria-haspopup="menu">
@@ -65,6 +70,7 @@ export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShow
       </header>
       <nav className="tabbar" aria-label="Gallery sections">
         <button className={view === 'albums' ? 'active' : ''} onClick={onShowAlbums}><Images /><span>Albums</span></button>
+        <button className={view === 'moments' ? 'active' : ''} onClick={onShowMoments}><Sparkles /><span>Moments</span></button>
         <button className={view === 'media' && !showingAlbum ? 'active' : ''} onClick={onShowMedia}><LayoutGrid /><span>Library</span></button>
         <button className={view === 'favorites' ? 'active' : ''} onClick={onShowFavorites}><Heart /><span>Favorites</span></button>
         <button className={view === 'trash' ? 'active' : ''} onClick={onShowTrash}><Trash2 /><span>Deleted</span></button>

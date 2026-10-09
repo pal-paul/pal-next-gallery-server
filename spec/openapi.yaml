@@ -58,6 +58,13 @@ info:
     by each recipient. Automatic albums cannot be renamed, deleted, reordered, or
     have membership changed manually.
 
+    ## Moments
+
+    Moments are separate from albums. Local deterministic generation groups
+    successfully processed photos into capture sessions using a 30-minute gap.
+    Groups require at least two photos and begin as drafts. Deleting a moment
+    never deletes its source photos.
+
     ## Runtime configuration
 
     The backend is configured through environment variables:
@@ -76,6 +83,8 @@ info:
     - `ENV_ISSUER` is displayed by authenticator applications.
     - `ENV_AUTO_ALBUM_RUN_AT` defaults to `02:00`; `ENV_AUTO_ALBUM_TIMEZONE`
       accepts an IANA timezone and defaults to the host's local timezone.
+    - `ENV_MOMENTS_INTERVAL` controls background moment generation and defaults
+      to `168h`.
 
     PostgreSQL stores users, sessions, challenges, completed-media metadata,
     sharing, albums, and preferences. Active upload chunks and their recovery
@@ -100,6 +109,8 @@ tags:
     description: Owned and shared completed media, downloads, and owner-managed sharing.
   - name: Gallery
     description: User-owned albums, personal favorites, trash, and accessible storage totals.
+  - name: Moments
+    description: Deterministic photo sessions stored separately from albums.
   - name: Operations
     description: Container health, readiness, and administrator integrity checks.
   - name: Processing
@@ -679,6 +690,120 @@ paths:
           description: Cover updated.
         "404":
           $ref: "#/components/responses/ResourceNotFound"
+  /moments:
+    get:
+      tags: [Moments]
+      operationId: listMoments
+      summary: List the current user's moments
+      responses:
+        "200":
+          description: Moments ordered newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Moment" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /moments/generate:
+    post:
+      tags: [Moments]
+      operationId: generateMoments
+      summary: Generate moments from unassigned processed photos
+      responses:
+        "200":
+          description: Number of drafts created.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [created]
+                properties:
+                  created: { type: integer, minimum: 0 }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /moments/{momentId}:
+    parameters:
+      - $ref: "#/components/parameters/MomentID"
+    get:
+      tags: [Moments]
+      operationId: getMoment
+      summary: Get a moment and its photos
+      responses:
+        "200":
+          description: Moment detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Moment" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+    patch:
+      tags: [Moments]
+      operationId: updateMoment
+      summary: Update moment metadata and lifecycle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MomentInput" }
+      responses:
+        "204": { description: Moment updated and marked as user-edited. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+    delete:
+      tags: [Moments]
+      operationId: deleteMoment
+      summary: Delete a moment without deleting photos
+      responses:
+        "204": { description: Moment deleted. }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+  /moments/{momentId}/media:
+    post:
+      tags: [Moments]
+      operationId: addMomentMedia
+      summary: Add accessible photos to a moment
+      parameters:
+        - $ref: "#/components/parameters/MomentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MomentMediaInput" }
+      responses:
+        "204": { description: Photos added and moment bounds refreshed. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+  /moments/{momentId}/media/{mediaId}:
+    delete:
+      tags: [Moments]
+      operationId: removeMomentMedia
+      summary: Remove a photo while retaining at least one member
+      parameters:
+        - $ref: "#/components/parameters/MomentID"
+        - $ref: "#/components/parameters/MomentMediaID"
+      responses:
+        "204": { description: Photo removed and moment bounds refreshed. }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+  /moments/{momentId}/cover:
+    patch:
+      tags: [Moments]
+      operationId: setMomentCover
+      summary: Select a moment member as its cover
+      parameters:
+        - $ref: "#/components/parameters/MomentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mediaId]
+              properties:
+                mediaId: { type: string, minLength: 1 }
+      responses:
+        "204": { description: Cover updated and moment marked as user-edited. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
   /media:
     get:
       tags: [Media]
@@ -1543,6 +1668,18 @@ components:
         type: string
         format: uuid
       description: User-owned album UUID. Inaccessible album IDs are reported as not found.
+    MomentID:
+      name: momentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: User-owned moment UUID. Inaccessible IDs are reported as not found.
+    MomentMediaID:
+      name: mediaId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+      description: Completed media identifier belonging to the moment.
     UploadID:
       name: id
       in: path
@@ -1789,6 +1926,54 @@ components:
           description: Present on album-detail responses and omitted from album-list responses when empty.
           items:
             $ref: "#/components/schemas/Media"
+    MomentInput:
+      type: object
+      additionalProperties: false
+      required: [title, status]
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string }
+        status: { type: string, enum: [draft, published, archived] }
+    MomentMediaInput:
+      type: object
+      additionalProperties: false
+      required: [mediaIds]
+      properties:
+        mediaIds:
+          type: array
+          minItems: 1
+          items: { type: string, minLength: 1 }
+    MomentMedia:
+      type: object
+      additionalProperties: false
+      required: [id, fileName, capturedAt, representative]
+      properties:
+        id: { type: string }
+        fileName: { type: string }
+        thumbnailUrl: { type: string }
+        capturedAt: { type: string, format: date-time }
+        representative: { type: boolean }
+    Moment:
+      type: object
+      additionalProperties: false
+      required: [id, ownerId, title, description, status, startTime, endTime, imageCount, userEdited, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [draft, published, archived] }
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time }
+        locationName: { type: string }
+        imageCount: { type: integer, format: int64, minimum: 0 }
+        coverMediaId: { type: string }
+        userEdited: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        media:
+          type: array
+          items: { $ref: "#/components/schemas/MomentMedia" }
     Media:
       type: object
       additionalProperties: false

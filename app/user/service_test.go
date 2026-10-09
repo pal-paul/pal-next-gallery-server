@@ -189,3 +189,14 @@ func TestMediaTemplatePreflightsUploadsAndUsesGalleryRoute(t *testing.T) {
 		t.Fatal("media workspace does not use the gallery route")
 	}
 }
+
+func TestConfigurationTemplateIncludesLogout(t *testing.T) {
+	content, err := configurationTemplates.ReadFile("templates/config.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(content)
+	if !strings.Contains(page, `id="logout"`) || !strings.Contains(page, `fetch('/auth/logout',{method:'POST'})`) {
+		t.Fatal("configuration page does not provide sign out")
+	}
+}

@@ -195,4 +195,31 @@ CREATE TABLE IF NOT EXISTS media_preferences (
 	favorite BOOLEAN NOT NULL DEFAULT FALSE,
 	PRIMARY KEY (upload_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS moments (
+	id UUID PRIMARY KEY,
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	title TEXT NOT NULL CHECK (length(btrim(title)) > 0),
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+	start_time TIMESTAMPTZ NOT NULL,
+	end_time TIMESTAMPTZ NOT NULL,
+	location_name TEXT NOT NULL DEFAULT '',
+	image_count BIGINT NOT NULL DEFAULT 0 CHECK (image_count >= 0),
+	cover_media_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL,
+	user_edited BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	CHECK (end_time >= start_time)
+);
+CREATE INDEX IF NOT EXISTS moments_owner_start_idx ON moments(owner_id, start_time DESC);
+CREATE TABLE IF NOT EXISTS moment_media (
+	moment_id UUID NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	similarity_score DOUBLE PRECISION,
+	representative_score DOUBLE PRECISION,
+	is_representative BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (moment_id, upload_id)
+);
+CREATE INDEX IF NOT EXISTS moment_media_upload_idx ON moment_media(upload_id);
 `

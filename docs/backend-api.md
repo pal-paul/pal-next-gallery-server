@@ -16,6 +16,7 @@ need to match Go package names.
 | `uploader`    | Resumable upload sessions, chunks, completion, and cancellation.               |
 | `autoalbum`   | Nightly weekly and high-volume daily album reconciliation.                     |
 | `gallery`     | Albums, accessible media, personal favorites, trash, and storage totals.       |
+| `moments`     | Time-session photo grouping, lifecycle, membership, and covers.                |
 | `processing`  | Durable FFmpeg jobs, thumbnails, dimensions, duration, EXIF, and GPS metadata. |
 | `publicshare` | Expiring, optionally password-protected public media and album links.          |
 | `batch`       | Durable multi-file upload progress and cancellation.                           |
@@ -44,6 +45,9 @@ it does not implement file transfer again.
 - Albums belong to one user. A user may add owned media or media available
   through a library share. If a library share is removed, all media from that
   owner is no longer returned in the recipient's albums.
+- Moments belong to one user and are stored separately from albums. Generation
+  considers processed, active photos accessible to that user and never deletes
+  or modifies source media.
 - Public album links may contain only media owned by the link creator. Shared
   media can remain in private albums but is never exposed through those links.
 - Favorite state belongs to `(user, media)`, so users do not overwrite each
@@ -332,6 +336,39 @@ Responses mark these albums with `"automatic": true`. Their title, order,
 membership, and lifecycle are system-managed, so the manual update, delete,
 reorder, add, and remove operations return `404` for them. Users may still
 select an album cover.
+
+### Moments
+
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Method   | Path                                  | Purpose                                      |
+| -------- | ------------------------------------- | -------------------------------------------- |
+| `GET`    | `/moments`                            | List the current user's moments.             |
+| `POST`   | `/moments/generate`                   | Group currently unassigned processed photos. |
+| `GET`    | `/moments/{momentId}`                 | Get a moment and its photos.                 |
+| `PATCH`  | `/moments/{momentId}`                 | Edit metadata and lifecycle.                 |
+| `DELETE` | `/moments/{momentId}`                 | Delete the moment, not its photos.            |
+| `POST`   | `/moments/{momentId}/media`           | Add accessible photos.                       |
+| `DELETE` | `/moments/{momentId}/media/{mediaId}` | Remove a photo, retaining at least one.       |
+| `PATCH`  | `/moments/{momentId}/cover`           | Select a member as the cover.                 |
+
+<!-- markdownlint-enable MD013 MD060 -->
+
+Initial generation considers successfully processed photos captured within the
+previous seven days, falling back to upload time, then groups adjacent photos
+whose gap is at most 30 minutes. Groups must contain at least three photos.
+Qwen evaluates images sampled across each group and generates its title and
+description; the group becomes a draft only when at least 65% of those images
+support one shared description. Already assigned photos are skipped on later
+runs, and the database prevents a photo from belonging to multiple Moments.
+Manual edits set a durable flag so later reconciliation cannot silently replace
+user choices.
+
+Background generation runs every 168 hours by default. Set
+`ENV_MOMENTS_INTERVAL` to another positive Go duration such as `24h` or `336h`.
+Set `ENV_MOMENTS_QWEN_URL` to the Ollama endpoint and
+`ENV_MOMENTS_QWEN_MODEL` to the installed vision model, such as
+`qwen3-vl:4b`.
 
 Create or update an album:
 

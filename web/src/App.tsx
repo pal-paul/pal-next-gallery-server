@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useState } from 'react'
 import { Search } from 'lucide-react'
 import { ApiError, demoMode } from './api/apiClient'
 import { galleryApi } from './api/galleryApi'
+import { momentsApi } from './api/momentsApi'
 import { AlbumGrid } from './components/AlbumGrid'
 import { AlbumDetailGallery } from './components/AlbumDetailGallery'
 import { AppHeader } from './components/AppHeader'
@@ -11,12 +12,13 @@ import { LibraryToolbar } from './components/LibraryToolbar'
 import { MediaTimeline } from './components/MediaTimeline'
 import { MediaMap } from './components/MediaMap'
 import { MediaViewer } from './components/MediaViewer'
+import { MomentsView } from './components/MomentsView'
+import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaItem, MediaSort, Moment, StorageStats } from './types/gallery'
 import { PageHeading } from './components/PageHeading'
 import { SelectionBar } from './components/SelectionBar'
 import { ShareMediaDialog, type SharePermission } from './components/ShareMediaDialog'
 import { StorageDashboard } from './components/StorageDashboard'
 import { albumSeed, mediaSeed } from './data/gallerySeed'
-import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaItem, MediaSort, StorageStats } from './types/gallery'
 import './App.css'
 
 type Props = { onLogout: () => Promise<void> }
@@ -34,6 +36,10 @@ function App({ onLogout }: Props) {
   const [view, setView] = useState<LibraryView>('albums')
   const [albums, setAlbums] = useState<Album[]>(() => demoMode ? structuredClone(albumSeed) : [])
   const [media, setMedia] = useState<MediaItem[]>(() => demoMode ? structuredClone(mediaSeed) : [])
+  const [moments, setMoments] = useState<Moment[]>([])
+  const [activeMoment, setActiveMoment] = useState<Moment>()
+  const [momentsLoading, setMomentsLoading] = useState(false)
+  const [generatingMoments, setGeneratingMoments] = useState(false)
   const [activeAlbumId, setActiveAlbumId] = useState<GalleryID | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<MediaFilter>('all')
@@ -61,9 +67,10 @@ function App({ onLogout }: Props) {
   useEffect(() => {
     if (demoMode) return
     const controller = new AbortController()
-    Promise.all([galleryApi.loadAlbums(controller.signal), galleryApi.loadMedia(controller.signal)]).then(([loadedAlbums, loadedMedia]) => {
+    Promise.all([galleryApi.loadAlbums(controller.signal), galleryApi.loadMedia(controller.signal), momentsApi.list(controller.signal)]).then(([loadedAlbums, loadedMedia, loadedMoments]) => {
       setAlbums(loadedAlbums)
       setMedia(loadedMedia)
+      setMoments(loadedMoments)
       setTargetAlbumId(loadedAlbums[0]?.id ?? '')
       setConnected(true)
     }).catch((error: unknown) => {
@@ -94,6 +101,40 @@ function App({ onLogout }: Props) {
     setView('albums')
     setActiveAlbumId(null)
     setSelected([])
+  }
+
+  const showMoments = async () => {
+    setView('moments')
+    setActiveAlbumId(null)
+    setActiveMoment(undefined)
+    setSelected([])
+    if (!connected) return
+    setMomentsLoading(true)
+    try {
+      setMoments(await momentsApi.list())
+    } finally {
+      setMomentsLoading(false)
+    }
+  }
+
+  const openMoment = async (id: GalleryID) => {
+    setMomentsLoading(true)
+    try {
+      setActiveMoment(await momentsApi.get(id))
+    } finally {
+      setMomentsLoading(false)
+    }
+  }
+
+  const generateMoments = async () => {
+    if (!connected || generatingMoments) return
+    setGeneratingMoments(true)
+    try {
+      await momentsApi.generate()
+      setMoments(await momentsApi.list())
+    } finally {
+      setGeneratingMoments(false)
+    }
   }
 
   const loadAllMedia = async () => {
@@ -294,18 +335,19 @@ function App({ onLogout }: Props) {
 
   return (
     <div className="app-shell">
-      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onLogout={onLogout} />
+      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMoments={() => void showMoments()} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} canUpload={connected && !demoMode} onUploaded={loadAllMedia} onLogout={onLogout} />
       <main>
-        <PageHeading view={view} album={activeAlbum} albumCount={albums.length} mediaCount={view === 'favorites' || view === 'trash' ? visibleMedia.length : media.length} favoriteCount={media.filter((item) => item.favorite && !item.deletedAt).length} onBack={showAlbums} onEdit={openEditAlbum} />
-        {view !== 'storage' && !activeAlbum && <LibraryToolbar view={view} query={query} filter={filter} sort={sort} grouping={grouping} onQueryChange={setQuery} onFilterChange={setFilter} onSortChange={setSort} onGroupingChange={setGrouping} />}
-        <SelectionBar count={selected.length} albums={albums} targetAlbumId={targetAlbumId} onTargetChange={setTargetAlbumId} onAdd={addSelectedToAlbum} onClear={() => setSelected([])} />
-        {view === 'albums'
+        {view !== 'moments' && <PageHeading view={view} album={activeAlbum} albumCount={albums.length} mediaCount={view === 'favorites' || view === 'trash' ? visibleMedia.length : media.length} favoriteCount={media.filter((item) => item.favorite && !item.deletedAt).length} onBack={showAlbums} onEdit={openEditAlbum} />}
+        {!['storage', 'moments'].includes(view) && !activeAlbum && <LibraryToolbar view={view} query={query} filter={filter} sort={sort} grouping={grouping} onQueryChange={setQuery} onFilterChange={setFilter} onSortChange={setSort} onGroupingChange={setGrouping} />}
+        {view !== 'moments' && <SelectionBar count={selected.length} albums={albums} targetAlbumId={targetAlbumId} onTargetChange={setTargetAlbumId} onAdd={addSelectedToAlbum} onClear={() => setSelected([])} />}
+        {view === 'moments' ? <MomentsView moments={moments} activeMoment={activeMoment} loading={momentsLoading} generating={generatingMoments} onGenerate={() => void generateMoments()} onOpen={(id) => void openMoment(id)} onBack={() => setActiveMoment(undefined)} onViewMedia={setViewerMediaId} />
+          : view === 'albums'
           ? <AlbumGrid albums={visibleAlbums} onOpen={(id) => void openAlbum(id)} onMove={moveAlbum} />
           : view === 'map' ? <MediaMap media={visibleMedia} onView={setViewerMediaId} />
           : view === 'storage' ? storageStats && <StorageDashboard stats={storageStats} />
           : activeAlbum ? <AlbumDetailGallery album={activeAlbum} media={visibleMedia} selected={selected} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onShare={openShare} onView={setViewerMediaId} />
           : <MediaTimeline media={visibleMedia} grouping={grouping} selected={selected} canRemove={false} canDelete={view === 'media'} inTrash={view === 'trash'} coverMediaId={undefined} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onShare={openShare} onView={setViewerMediaId} />}
-        {!['map', 'storage'].includes(view) && (view === 'albums' ? visibleAlbums.length : visibleMedia.length) === 0 && (
+        {!['map', 'storage', 'moments'].includes(view) && (view === 'albums' ? visibleAlbums.length : visibleMedia.length) === 0 && (
           <section className="empty-state"><Search size={28} /><h2>No memories found</h2><p>Try a different title, tag, date, or filter.</p></section>
         )}
       </main>

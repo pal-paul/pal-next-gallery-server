@@ -17,6 +17,7 @@ account used by Container Manager:
 
 ```text
 /volume1/docker/next-gallery-server/postgres
+/volume1/docker/next-gallery-server/ollama
 /volume1/docker/next-gallery-server/backups
 /volume1/media/gallery
 /volume1/media/import
@@ -27,6 +28,12 @@ Synology may validate bind-mount sources before Compose processes
 `create_host_path`, so create every source directory explicitly. If the NAS
 uses a volume other than `volume1`, update every source path in the Compose
 file.
+
+The bundled `qwen3-vl:4b` model requires roughly 4 GB for model storage and
+additional memory while running. Allow at least 8 GB of available RAM for a
+CPU-only NAS deployment. On smaller systems, remove the `ollama` and
+`ollama-model` services and point `ENV_MOMENTS_QWEN_URL` at an Ollama instance
+running on another trusted machine.
 
 ### 2. Configure the project
 
@@ -51,7 +58,10 @@ include `null` under normal operation.
 
 In DSM, open **Container Manager > Project > Create**, choose the Compose file,
 and use `next-gallery-server` as the project name. Review the generated project
-and start it. Wait for both `postgres` and `server` to report healthy.
+and start it. On the first deployment, `ollama-model` downloads
+`qwen3-vl:4b`; this is several gigabytes and must finish before `server` starts.
+Wait for `postgres`, `ollama`, and `server` to report healthy and for
+`ollama-model` to exit successfully.
 
 The Synology Compose file contains all settings and does not require a `.env`
 file. As an alternative, deploy it from SSH while in the repository directory:
@@ -59,6 +69,18 @@ file. As an alternative, deploy it from SSH while in the repository directory:
 ```sh
 docker compose -f build/compose.synology.yaml pull
 docker compose -f build/compose.synology.yaml up -d
+```
+
+The `server` service uses the release-managed `latest` image. Publish a new
+repository release containing the Moments implementation before deploying this
+configuration to a remote NAS; the image publishing workflow updates that tag.
+
+Verify that the model is installed and reachable from the application network:
+
+```sh
+docker compose -f build/compose.synology.yaml exec ollama ollama list
+docker compose -f build/compose.synology.yaml exec server \
+  wget -qO- http://ollama:11434/api/tags
 ```
 
 ### 4. Complete initial setup
@@ -102,6 +124,19 @@ which group media by capture date when that metadata is available.
 Images are published for `linux/amd64` and `linux/arm64`. The application image
 includes FFmpeg for later thumbnail and preview processing and runs as a
 non-root user.
+
+## Moments
+
+Moment generation considers unassigned, processed photos captured within the
+previous seven days. A group must contain at least three photos. Qwen receives
+images sampled across the group and the Moment is created only when at least
+65% of the supplied photos support one shared description. Each photo can
+belong to only one Moment.
+
+The Synology Compose project runs Ollama only on its internal network and keeps
+model data under `/volume1/docker/next-gallery-server/ollama`. Ollama port
+`11434` is not published on the NAS host. Change `ENV_MOMENTS_INTERVAL` to
+control background generation; `168h` runs it weekly.
 
 ## Reverse proxy
 
@@ -214,6 +249,7 @@ Station or SSH, then redeploy the project:
 
 ```sh
 mkdir -p /volume1/docker/next-gallery-server/postgres
+mkdir -p /volume1/docker/next-gallery-server/ollama
 mkdir -p /volume1/media/gallery /volume1/media/import /volume1/media/tmp
 ```
 

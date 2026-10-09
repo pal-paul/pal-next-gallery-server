@@ -10,14 +10,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (store *Postgres) ListAlbums(ctx context.Context, userID, search string) ([]gallery.Album, error) {
-	rows, err := store.pool.Query(ctx, `SELECT a.id, a.owner_id, a.title, a.description, a.automatic, a.created_at,
+const listAlbumsQuery = `SELECT a.id, a.owner_id, a.title, a.description, a.automatic, a.created_at,
 		COUNT(m.upload_id) FILTER (WHERE m.deleted_at IS NULL AND (m.owner_id = $1 OR s.user_id IS NOT NULL)),
-		COALESCE(CASE WHEN BOOL_OR(m.upload_id = a.cover_media_id AND m.deleted_at IS NULL AND
-			(m.owner_id = $1 OR s.user_id IS NOT NULL)) THEN a.cover_media_id END, '')
+		COALESCE(
+			CASE WHEN BOOL_OR(m.upload_id = a.cover_media_id AND m.deleted_at IS NULL AND
+				(m.owner_id = $1 OR s.user_id IS NOT NULL)) THEN a.cover_media_id END,
+			(ARRAY_AGG(m.upload_id ORDER BY COALESCE(exif.captured_at, m.created_at) DESC, m.upload_id)
+				FILTER (WHERE m.deleted_at IS NULL AND (m.owner_id = $1 OR s.user_id IS NOT NULL)))[1],
+			'')
 		FROM albums a
 		LEFT JOIN album_media am ON am.album_id = a.id
 		LEFT JOIN media_uploads m ON m.upload_id = am.upload_id
+		LEFT JOIN media_exif exif ON exif.upload_id = m.upload_id
 		LEFT JOIN user_media_shares s ON s.owner_id = m.owner_id AND s.user_id = $1
 		WHERE a.owner_id = $1 AND ($2 = '' OR a.title ILIKE '%' || $2 || '%' OR
 			a.description ILIKE '%' || $2 || '%' OR EXISTS (
@@ -27,7 +31,10 @@ func (store *Postgres) ListAlbums(ctx context.Context, userID, search string) ([
 				AND (search_m.owner_id = $1 OR search_s.user_id IS NOT NULL)
 				AND search_m.filename ILIKE '%' || $2 || '%'))
 		GROUP BY a.id
-		ORDER BY a.position ASC NULLS LAST, a.created_at DESC`, userID, strings.TrimSpace(search))
+		ORDER BY a.position ASC NULLS LAST, a.created_at DESC`
+
+func (store *Postgres) ListAlbums(ctx context.Context, userID, search string) ([]gallery.Album, error) {
+	rows, err := store.pool.Query(ctx, listAlbumsQuery, userID, strings.TrimSpace(search))
 	if err != nil {
 		return nil, err
 	}

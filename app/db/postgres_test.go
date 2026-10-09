@@ -42,3 +42,29 @@ func TestGalleryUsesCaptureTimeWithUploadFallback(t *testing.T) {
 		t.Fatal("gallery media date does not prefer capture time")
 	}
 }
+
+func TestAlbumListFallsBackToNewestAccessibleMediaForCover(t *testing.T) {
+	for _, fragment := range []string{
+		"ARRAY_AGG(m.upload_id ORDER BY COALESCE(exif.captured_at, m.created_at) DESC",
+		"FILTER (WHERE m.deleted_at IS NULL",
+		"LEFT JOIN media_exif exif ON exif.upload_id = m.upload_id",
+	} {
+		if !strings.Contains(listAlbumsQuery, fragment) {
+			t.Errorf("album list query does not contain %q", fragment)
+		}
+	}
+}
+
+func TestSchemaCreatesMomentsSeparatelyFromAlbums(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS moments",
+		"CREATE TABLE IF NOT EXISTS moment_media",
+		"REFERENCES moments(id) ON DELETE CASCADE",
+		"REFERENCES media_uploads(upload_id) ON DELETE CASCADE",
+		"user_edited BOOLEAN NOT NULL DEFAULT FALSE",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("moments schema does not contain %q", statement)
+		}
+	}
+}

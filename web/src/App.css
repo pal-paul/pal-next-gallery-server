@@ -609,7 +609,44 @@ body { background: var(--surface); color: var(--ink); font-family: var(--font-ap
 .top-actions { align-items: center; }
 .header-action, .options-trigger { width: 36px; height: 36px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; color: var(--moss); background: transparent; cursor: pointer; }
 .header-action:hover, .options-trigger:hover, .options-trigger[aria-expanded='true'] { background: rgba(15, 143, 135, .1); }
+.header-action:disabled { opacity: .45; cursor: not-allowed; }
 .options-list { top: calc(100% + 6px); }
+
+.upload-notice { min-width: 240px; max-width: min(360px, calc(100vw - 32px)); min-height: 52px; padding: 10px 12px; position: fixed; top: calc(68px + env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); z-index: 60; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 3px 10px; border: .5px solid var(--line); border-radius: 8px; color: var(--ink); background: rgba(255, 255, 255, .96); box-shadow: var(--shadow-soft); text-align: left; }
+.upload-notice span { max-width: 290px; display: block; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.upload-notice progress { width: 100%; height: 4px; grid-column: 1 / -1; accent-color: var(--moss); }
+button.upload-notice { cursor: pointer; }
+.upload-notice.success { color: var(--moss-dark); }
+.upload-notice.error { color: #a02f2f; }
+
+.moments-heading { margin-bottom: 24px; display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.moments-heading p { margin: 0 0 4px; color: var(--muted); font-size: 12px; }
+.moments-heading h1 { margin: 0; font-family: var(--font-app); font-size: 30px; letter-spacing: 0; }
+.moments-heading .secondary-button { width: auto; min-height: 38px; padding: 0 14px; display: flex; align-items: center; gap: 7px; }
+.moment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+.moment-card { width: 100%; aspect-ratio: 16 / 10; padding: 0; position: relative; overflow: hidden; border: 0; border-radius: 8px; background: #d8d8dc; cursor: pointer; animation: reveal .45s ease both; animation-delay: var(--delay); }
+.moment-card::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 36%, rgba(0, 0, 0, .78) 100%); pointer-events: none; }
+.moment-card > img { width: 100%; height: 100%; object-fit: cover; transition: transform .45s ease; }
+.moment-card:hover > img { transform: scale(1.025); }
+.moment-card-copy { position: absolute; right: 0; bottom: 0; left: 0; z-index: 1; padding: 18px; color: #fff; text-align: left; }
+.moment-card-copy strong { display: block; font-size: 20px; line-height: 1.15; }
+.moment-card-copy > span { margin-top: 6px; display: flex; align-items: center; gap: 5px; color: rgba(255,255,255,.9); font-size: 11px; }
+.moment-card-copy b { font-weight: 400; }
+.moment-detail { display: grid; gap: 2px; }
+.moment-detail > .back-button { width: max-content; margin-bottom: 14px; }
+.moment-hero { aspect-ratio: 16 / 8; position: relative; overflow: hidden; border-radius: 8px 8px 0 0; background: #d8d8dc; }
+.moment-hero::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 25%, rgba(0,0,0,.82) 100%); }
+.moment-hero > img { width: 100%; height: 100%; object-fit: cover; }
+.moment-hero > div { max-width: 720px; padding: 32px; position: absolute; right: 0; bottom: 0; left: 0; z-index: 1; color: #fff; }
+.moment-hero span { color: rgba(255,255,255,.82); font-size: 12px; }
+.moment-hero h1 { margin: 5px 0 0; font-size: 34px; letter-spacing: 0; }
+.moment-hero p { margin: 8px 0 0; line-height: 1.45; }
+.moment-hero small { margin-top: 12px; display: flex; align-items: center; gap: 6px; color: rgba(255,255,255,.86); }
+.moment-hero b { font-weight: 400; }
+.moment-media-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; }
+.moment-media-grid button { width: 100%; aspect-ratio: 1; padding: 0; display: grid; place-items: center; overflow: hidden; border: 0; background: #d8d8dc; cursor: zoom-in; }
+.moment-media-grid img { width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
+.moment-media-grid button:hover img { transform: scale(1.03); }
 
 .tabbar {
   height: calc(58px + env(safe-area-inset-bottom));
@@ -618,7 +655,7 @@ body { background: var(--surface); color: var(--ink); font-family: var(--font-ap
   inset: auto 0 0;
   z-index: 40;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   border-top: .5px solid var(--line);
   background: rgba(249, 249, 249, .92);
   backdrop-filter: blur(18px) saturate(180%);
@@ -688,7 +725,7 @@ main { width: 100%; margin: 0; padding: 16px 16px 32px; }
 
 @media (min-width: 700px) {
   .app-shell { padding-bottom: 0; }
-  .tabbar { width: 520px; right: 24px; left: auto; border: .5px solid var(--line); border-radius: 12px 12px 0 0; }
+  .tabbar { width: 600px; right: 24px; left: auto; border: .5px solid var(--line); border-radius: 12px 12px 0 0; }
   main { width: min(1100px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 80px; }
   .album-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
   .toolbar { grid-template-columns: minmax(240px, 1fr) auto; align-items: center; }
@@ -697,10 +734,26 @@ main { width: 100%; margin: 0; padding: 16px 16px 32px; }
   .album-detail-cover { border-radius: 8px 8px 0 0; }
   .album-mosaic { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: calc((min(1100px, 100vw - 48px) - 4px) / 3); }
   .album-copy strong { font-size: 24px; }
+  .moment-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (min-width: 1100px) {
   .album-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .media-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .album-mosaic { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .moment-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 699px) {
+  .moments-heading { align-items: start; }
+  .moments-heading h1 { font-size: 27px; }
+  .moments-heading .secondary-button { padding: 0 10px; font-size: 11px; }
+  .moment-grid { grid-template-columns: 1fr; gap: 18px; }
+  .moment-card { border-radius: 16px; }
+  .moment-detail { margin: 0 -16px; }
+  .moment-detail > .back-button { margin-left: 16px; }
+  .moment-hero { aspect-ratio: 4 / 3; border-radius: 0; }
+  .moment-hero > div { padding: 20px; }
+  .moment-hero h1 { font-size: 28px; }
+  .moment-media-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

@@ -27,8 +27,44 @@ services:
         max-file: "5"
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - type: bind
+        source: /volume1/docker/next-gallery-server/ollama
+        target: /root/.ollama
+        bind:
+          create_host_path: true
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: unless-stopped
+
+  ollama-model:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "qwen3-vl:4b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: "no"
+
   server:
-    image: ghcr.io/pal-paul/pal-next-gallery-server:1.1.0
+    image: ghcr.io/pal-paul/pal-next-gallery-server:latest
     environment:
       ENV_GIN_MODE: release
       ENV_PORT: "8081"
@@ -50,6 +86,9 @@ services:
       ENV_ISSUER: "<change-me>"
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
+      ENV_MOMENTS_INTERVAL: 168h
+      ENV_MOMENTS_QWEN_URL: http://ollama:11434
+      ENV_MOMENTS_QWEN_MODEL: qwen3-vl:4b
       NAS_IMPORT_PATH: /data/import
       ENV_MEDIA_DIR: /data/gallery
       ENV_TMP_DIR: /data/tmp
@@ -74,6 +113,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      ollama-model:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]
       interval: 30s

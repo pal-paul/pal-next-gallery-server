@@ -47,6 +47,10 @@ configuration page. The gallery, setup lifecycle, and authenticated JSON APIs
 remain available. Set it back to `YES` and restart to create or manage users in
 the browser.
 
+Regular users can upload one or more photos or videos from the upload button in
+the gallery header. The browser sends large files through the resumable chunked
+upload API and refreshes the library after completion.
+
 For a local source build, run `npm ci && npm run build` in `web` before starting
 the Go server. `ENV_WEB_DIR` defaults to `./web/dist`; the container image builds
 and installs this directory automatically.
