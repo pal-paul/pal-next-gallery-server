@@ -224,8 +224,23 @@ func (store *Postgres) SetFavorite(ctx context.Context, mediaID, userID string, 
 }
 
 func (store *Postgres) TrashMedia(ctx context.Context, mediaID, userID string) error {
-	result, err := store.pool.Exec(ctx, trashMediaQuery, mediaID, userID)
-	return changed(result.RowsAffected(), err)
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	affected, err := affectedMomentsForMedia(ctx, transaction, mediaID)
+	if err != nil {
+		return err
+	}
+	result, err := transaction.Exec(ctx, trashMediaQuery, mediaID, userID)
+	if err := changed(result.RowsAffected(), err); err != nil {
+		return err
+	}
+	if err := reconcileAffectedMoments(ctx, transaction, affected, false); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }
 
 const trashMediaQuery = `UPDATE media_uploads media SET deleted_at = now()
@@ -237,9 +252,24 @@ const trashMediaQuery = `UPDATE media_uploads media SET deleted_at = now()
 		)`
 
 func (store *Postgres) RestoreMedia(ctx context.Context, mediaID, userID string) error {
-	result, err := store.pool.Exec(ctx, `UPDATE media_uploads SET deleted_at = NULL
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	affected, err := affectedMomentsForMedia(ctx, transaction, mediaID)
+	if err != nil {
+		return err
+	}
+	result, err := transaction.Exec(ctx, `UPDATE media_uploads SET deleted_at = NULL
 		WHERE upload_id = $1 AND owner_id = $2 AND deleted_at IS NOT NULL`, mediaID, userID)
-	return changed(result.RowsAffected(), err)
+	if err := changed(result.RowsAffected(), err); err != nil {
+		return err
+	}
+	if err := reconcileAffectedMoments(ctx, transaction, affected, false); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }
 
 func (store *Postgres) GetOwnedMediaPaths(ctx context.Context, mediaID, userID string) (gallery.MediaPaths, error) {
@@ -250,8 +280,23 @@ func (store *Postgres) GetOwnedMediaPaths(ctx context.Context, mediaID, userID s
 }
 
 func (store *Postgres) DeleteMedia(ctx context.Context, mediaID, userID string) error {
-	result, err := store.pool.Exec(ctx, `DELETE FROM media_uploads WHERE upload_id = $1 AND owner_id = $2`, mediaID, userID)
-	return changed(result.RowsAffected(), err)
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	affected, err := affectedMomentsForMedia(ctx, transaction, mediaID)
+	if err != nil {
+		return err
+	}
+	result, err := transaction.Exec(ctx, `DELETE FROM media_uploads WHERE upload_id = $1 AND owner_id = $2`, mediaID, userID)
+	if err := changed(result.RowsAffected(), err); err != nil {
+		return err
+	}
+	if err := reconcileAffectedMoments(ctx, transaction, affected, true); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }
 
 func (store *Postgres) GetStorage(ctx context.Context, userID string) (gallery.Storage, error) {

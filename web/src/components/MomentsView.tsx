@@ -1,5 +1,5 @@
 import { ArrowLeft, CalendarDays, Check, Image, Images, LoaderCircle, MapPin, Pencil, Plus, Sparkles, Trash2, X } from 'lucide-react'
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import type { MediaItem, Moment } from '../types/gallery'
 import { formatDate } from '../utils/date'
 import { AuthenticatedImage } from './AuthenticatedMedia'
@@ -25,11 +25,10 @@ type Props = {
 
 export function MomentsView({ moments, activeMoment, loading, onOpen, onBack, onViewMedia, media, aiEnabled, onCreate, onUpdate, onDelete, onAddMedia, onRemoveMedia, onSuggestMetadata, creating, onCreatingChange }: Props) {
   const [editing, setEditing] = useState(false)
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
+  const [title, setTitle] = useState(activeMoment?.title ?? '')
+  const [description, setDescription] = useState(activeMoment?.description ?? '')
   const [picked, setPicked] = useState<string[]>([])
   const [pending, setPending] = useState(false)
-  useEffect(() => { setTitle(activeMoment?.title ?? ''); setDescription(activeMoment?.description ?? ''); setEditing(false); setPicked([]) }, [activeMoment?.id])
   const photos = media.filter((item) => item.kind === 'photo' && !item.deletedAt)
   const currentIds = new Set(activeMoment?.media?.map((item) => item.id) ?? [])
   const togglePicked = (id: string) => setPicked((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])
@@ -81,7 +80,7 @@ export function MomentsView({ moments, activeMoment, loading, onOpen, onBack, on
           ))}
         </div>
       )}
-      {!loading && moments.length === 0 && <div className="empty-state"><Sparkles size={28} /><h2>No moments yet</h2><p>Find moments after uploading and processing at least two photos.</p></div>}
+      {!loading && moments.length === 0 && <div className="empty-state"><Sparkles size={28} /><h2>No moments yet</h2><p>Find moments after uploading and processing at least three photos.</p></div>}
     </section>
   )
 }

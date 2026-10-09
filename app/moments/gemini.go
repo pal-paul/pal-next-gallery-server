@@ -13,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const defaultGeminiEndpoint = "https://generativelanguage.googleapis.com/v1beta"
+const geminiRequestTimeout = 30 * time.Second
 
 type GeminiEnricher struct {
 	endpoint   *url.URL
@@ -45,7 +47,8 @@ func NewGeminiPipeline(endpoint, apiKey, visionModel, textModel, mediaDir string
 	}
 	return &GeminiEnricher{
 		endpoint: parsed, apiKey: strings.TrimSpace(apiKey), model: strings.TrimSpace(visionModel),
-		textModel: strings.TrimSpace(textModel), mediaDir: filepath.Clean(mediaDir), httpClient: http.DefaultClient,
+		textModel: strings.TrimSpace(textModel), mediaDir: filepath.Clean(mediaDir),
+		httpClient: &http.Client{Timeout: geminiRequestTimeout},
 	}, nil
 }
 

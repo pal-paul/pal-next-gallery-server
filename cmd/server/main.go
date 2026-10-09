@@ -71,7 +71,7 @@ type Environment struct {
 	MomentsGeminiModel     string `env:"ENV_MOMENTS_GEMINI_MODEL,default=gemini-3.5-flash-lite"`
 	MomentsGeminiTextModel string `env:"ENV_MOMENTS_GEMINI_TEXT_MODEL,default=gemini-3.5-flash-lite"`
 	MomentsEmbeddingURL    string `env:"ENV_MOMENTS_EMBEDDING_URL"`
-	MomentsEmbeddingModel  string `env:"ENV_MOMENTS_EMBEDDING_MODEL,default=siglip"`
+	MomentsEmbeddingModel  string `env:"ENV_MOMENTS_EMBEDDING_MODEL,default=openai/clip-vit-base-patch32"`
 	NASImportPath          string `env:"NAS_IMPORT_PATH"`
 }
 

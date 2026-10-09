@@ -23,17 +23,15 @@ type Props = {
 }
 
 export function EditAlbumDialog({ open, album, media, name, description, coverMediaId, onNameChange, onDescriptionChange, onCoverChange, onClose, onSave, aiEnabled, aiPending, onSuggestMetadata, startAdding, onAddMedia }: Props) {
-  const [adding, setAdding] = useState(false)
+  const [adding, setAdding] = useState(startAdding)
   const [selected, setSelected] = useState<string[]>([])
   const [addingPending, setAddingPending] = useState(false)
   useEffect(() => {
     if (!open) return
-  setAdding(startAdding)
-  setSelected([])
     const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
     document.addEventListener('keydown', closeOnEscape)
     return () => document.removeEventListener('keydown', closeOnEscape)
-  }, [onClose, open, startAdding])
+  }, [onClose, open])
 
   if (!open) return null
   const photos = media.filter((item) => album.mediaIds.includes(item.id) && item.kind === 'photo')

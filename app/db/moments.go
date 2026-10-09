@@ -10,8 +10,16 @@ import (
 )
 
 const momentSelect = `SELECT moment.id, moment.owner_id, moment.title, moment.description, moment.status,
-	moment.start_time, moment.end_time, moment.location_name, moment.image_count,
-	COALESCE(moment.cover_media_id, ''), moment.user_edited, moment.created_at, moment.updated_at`
+	moment.start_time, moment.end_time, moment.location_name,
+	(SELECT COUNT(*) FROM moment_media member JOIN media_uploads media ON media.upload_id = member.upload_id
+		WHERE member.moment_id = moment.id AND media.deleted_at IS NULL AND (media.owner_id = moment.owner_id OR EXISTS (
+			SELECT 1 FROM user_media_shares share WHERE share.owner_id = media.owner_id AND share.user_id = moment.owner_id))),
+	COALESCE((SELECT media.upload_id FROM moment_media member JOIN media_uploads media ON media.upload_id = member.upload_id
+		LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id
+		WHERE member.moment_id = moment.id AND media.deleted_at IS NULL AND (media.owner_id = moment.owner_id OR EXISTS (
+			SELECT 1 FROM user_media_shares share WHERE share.owner_id = media.owner_id AND share.user_id = moment.owner_id))
+		ORDER BY (media.upload_id = moment.cover_media_id) DESC, COALESCE(exif.captured_at, media.created_at), media.upload_id LIMIT 1), ''),
+	moment.user_edited, moment.created_at, moment.updated_at`
 
 func (store *Postgres) ListMomentOwners(ctx context.Context) ([]string, error) {
 	rows, err := store.pool.Query(ctx, `SELECT id FROM users ORDER BY id`)
@@ -33,7 +41,10 @@ func (store *Postgres) ListMomentOwners(ctx context.Context) ([]string, error) {
 func (store *Postgres) ListMoments(ctx context.Context, ownerID string) ([]moments.Moment, error) {
 	rows, err := store.pool.Query(ctx, momentSelect+`
 		FROM moments moment
-		WHERE moment.owner_id = $1
+		WHERE moment.owner_id = $1 AND EXISTS (SELECT 1 FROM moment_media member
+			JOIN media_uploads media ON media.upload_id = member.upload_id
+			WHERE member.moment_id = moment.id AND media.deleted_at IS NULL AND (media.owner_id = moment.owner_id OR EXISTS (
+				SELECT 1 FROM user_media_shares share WHERE share.owner_id = media.owner_id AND share.user_id = moment.owner_id)))
 		ORDER BY moment.start_time DESC, moment.id`, ownerID)
 	if err != nil {
 		return nil, err
@@ -63,7 +74,9 @@ func (store *Postgres) GetMoment(ctx context.Context, momentID, ownerID string) 
 		JOIN media_uploads media ON media.upload_id = member.upload_id
 		LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id
 		WHERE member.moment_id = $1 AND media.deleted_at IS NULL
-		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id`, momentID)
+		AND (media.owner_id = $2 OR EXISTS (SELECT 1 FROM user_media_shares share
+			WHERE share.owner_id = media.owner_id AND share.user_id = $2))
+		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id`, momentID, ownerID)
 	if err != nil {
 		return item, err
 	}
@@ -97,6 +110,9 @@ func (store *Postgres) AddMomentMedia(ctx context.Context, momentID, ownerID str
 		return err
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
+	if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "moments:"+ownerID); err != nil {
+		return err
+	}
 	var exists bool
 	if err := transaction.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM moments WHERE id = $1 AND owner_id = $2)`, momentID, ownerID).Scan(&exists); err != nil {
@@ -109,15 +125,17 @@ func (store *Postgres) AddMomentMedia(ctx context.Context, momentID, ownerID str
 	for _, mediaID := range mediaIDs {
 		uniqueIDs[mediaID] = struct{}{}
 	}
-	var accessibleCount int
+	var availableCount int
 	if err := transaction.QueryRow(ctx, `SELECT COUNT(DISTINCT media.upload_id) FROM media_uploads media
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $2
 		WHERE media.upload_id = ANY($1) AND media.deleted_at IS NULL
-		AND media.mime_type LIKE 'image/%' AND (media.owner_id = $2 OR share.user_id IS NOT NULL)`, mediaIDs, ownerID).Scan(&accessibleCount); err != nil {
+		AND media.mime_type LIKE 'image/%' AND (media.owner_id = $2 OR share.user_id IS NOT NULL)
+		AND NOT EXISTS (SELECT 1 FROM moment_media member JOIN moments existing ON existing.id = member.moment_id
+			WHERE member.upload_id = media.upload_id AND existing.owner_id = $2 AND existing.id <> $3)`, mediaIDs, ownerID, momentID).Scan(&availableCount); err != nil {
 		return err
 	}
-	if accessibleCount != len(uniqueIDs) {
-		return moments.ErrNotFound
+	if availableCount != len(uniqueIDs) {
+		return moments.ErrCandidatesAssigned
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO moment_media (moment_id, upload_id)
 		SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`, momentID, mediaIDs); err != nil {
@@ -290,15 +308,20 @@ func (store *Postgres) CreateMoment(ctx context.Context, moment moments.Moment, 
 		return err
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
+	if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "moments:"+moment.OwnerID); err != nil {
+		return err
+	}
 	var accessible int
 	if err := transaction.QueryRow(ctx, `SELECT COUNT(DISTINCT media.upload_id) FROM media_uploads media
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $2
 		WHERE media.upload_id = ANY($1) AND media.deleted_at IS NULL AND media.mime_type LIKE 'image/%'
-		AND (media.owner_id = $2 OR share.user_id IS NOT NULL)`, mediaIDs, moment.OwnerID).Scan(&accessible); err != nil {
+		AND (media.owner_id = $2 OR share.user_id IS NOT NULL)
+		AND NOT EXISTS (SELECT 1 FROM moment_media member JOIN moments existing ON existing.id = member.moment_id
+			WHERE member.upload_id = media.upload_id AND existing.owner_id = $2)`, mediaIDs, moment.OwnerID).Scan(&accessible); err != nil {
 		return err
 	}
 	if accessible != len(mediaIDs) {
-		return moments.ErrNotFound
+		return moments.ErrCandidatesAssigned
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO moments
 		(id, owner_id, title, description, status, start_time, end_time, image_count, cover_media_id, user_edited)
@@ -330,6 +353,8 @@ func (store *Postgres) listMetadataCandidates(ctx context.Context, membershipQue
 		COALESCE(exif.captured_at, media.created_at), exif.latitude, exif.longitude
 		FROM media_uploads media LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id
 		WHERE media.upload_id IN (`+membershipQuery+`) AND media.deleted_at IS NULL AND media.mime_type LIKE 'image/%'
+		AND (media.owner_id = $2 OR EXISTS (SELECT 1 FROM user_media_shares share
+			WHERE share.owner_id = media.owner_id AND share.user_id = $2))
 		ORDER BY random() LIMIT $3`, collectionID, ownerID, limit)
 	if err != nil {
 		return nil, err
@@ -358,9 +383,53 @@ func refreshMoment(ctx context.Context, transaction pgx.Tx, momentID, ownerID st
 			COUNT(*) AS image_count,
 			ARRAY_AGG(media.upload_id ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id) AS media_ids
 			FROM moment_media member JOIN media_uploads media ON media.upload_id = member.upload_id
-			LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id WHERE member.moment_id = $1) aggregate
+			LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id WHERE member.moment_id = $1
+			AND media.deleted_at IS NULL AND (media.owner_id = $2 OR EXISTS (SELECT 1 FROM user_media_shares share
+				WHERE share.owner_id = media.owner_id AND share.user_id = $2)) HAVING COUNT(*) > 0) aggregate
 		WHERE moment.id = $1 AND moment.owner_id = $2`, momentID, ownerID)
+	if err != nil || result.RowsAffected() > 0 {
+		return err
+	}
+	result, err = transaction.Exec(ctx, `UPDATE moments SET image_count = 0, cover_media_id = NULL, updated_at = now()
+		WHERE id = $1 AND owner_id = $2`, momentID, ownerID)
 	return momentChanged(result.RowsAffected(), err)
+}
+
+type affectedMoment struct {
+	id      string
+	ownerID string
+}
+
+func affectedMomentsForMedia(ctx context.Context, transaction pgx.Tx, mediaID string) ([]affectedMoment, error) {
+	rows, err := transaction.Query(ctx, `SELECT moment.id, moment.owner_id FROM moments moment
+		JOIN moment_media member ON member.moment_id = moment.id WHERE member.upload_id = $1`, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]affectedMoment, 0)
+	for rows.Next() {
+		var item affectedMoment
+		if err := rows.Scan(&item.id, &item.ownerID); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func reconcileAffectedMoments(ctx context.Context, transaction pgx.Tx, affected []affectedMoment, deleteEmpty bool) error {
+	for _, item := range affected {
+		if err := refreshMoment(ctx, transaction, item.id, item.ownerID); err != nil {
+			return err
+		}
+		if deleteEmpty {
+			if _, err := transaction.Exec(ctx, `DELETE FROM moments WHERE id = $1 AND owner_id = $2 AND image_count = 0`, item.id, item.ownerID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type momentRow interface{ Scan(...any) error }

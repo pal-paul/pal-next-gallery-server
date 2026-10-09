@@ -11,6 +11,16 @@ import (
 	"testing"
 )
 
+func TestNewHTTPImageEmbedderUsesBoundedHTTPClient(t *testing.T) {
+	embedder, err := NewHTTPImageEmbedder("http://embedding:8000/embed", "clip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embedder.httpClient.Timeout != embeddingRequestTimeout {
+		t.Fatalf("HTTP timeout = %s, want %s", embedder.httpClient.Timeout, embeddingRequestTimeout)
+	}
+}
+
 func TestHTTPImageEmbedderSendsImageAndParsesVector(t *testing.T) {
 	imageBytes := []byte("image bytes")
 	imagePath := filepath.Join(t.TempDir(), "photo.jpg")

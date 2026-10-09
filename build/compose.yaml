@@ -21,6 +21,7 @@ services:
         max-file: "${LOG_MAX_FILES}"
 
   embedding-api:
+    profiles: ["ai"]
     build:
       context: ..
       dockerfile: embedding/Dockerfile
@@ -56,7 +57,7 @@ services:
     env_file:
       - ../.env
     environment:
-      ENV_AI_FEATURE: ${ENV_AI_FEATURE:-YES}
+      ENV_AI_FEATURE: ${ENV_AI_FEATURE:-NO}
       ENV_MOMENTS_CV_WORKER: /app/moments-cv-worker
       ENV_MOMENTS_GEMINI_URL: ${ENV_MOMENTS_GEMINI_URL:-https://generativelanguage.googleapis.com/v1beta}
       ENV_MOMENTS_GEMINI_API_KEY: ${ENV_MOMENTS_GEMINI_API_KEY:-}
@@ -74,6 +75,7 @@ services:
         condition: service_healthy
       embedding-api:
         condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${ENV_PORT}/readyz"]
       interval: 30s

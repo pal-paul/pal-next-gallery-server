@@ -28,6 +28,7 @@ services:
     restart: unless-stopped
 
   embedding-api:
+    profiles: ["ai"]
     image: ghcr.io/pal-paul/pal-next-gallery-server-embedding:latest
     environment:
       EMBEDDING_MODEL: openai/clip-vit-base-patch32
@@ -73,7 +74,7 @@ services:
       ENV_ISSUER: "<change-me>"
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
-      ENV_AI_FEATURE: "YES"
+      ENV_AI_FEATURE: "NO"
       ENV_MOMENTS_INTERVAL: 168h
       ENV_MOMENTS_CV_WORKER: /app/moments-cv-worker
       ENV_MOMENTS_GEMINI_URL: https://generativelanguage.googleapis.com/v1beta
@@ -108,6 +109,7 @@ services:
         condition: service_healthy
       embedding-api:
         condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]
       interval: 30s

@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+func TestNewGeminiPipelineUsesBoundedHTTPClient(t *testing.T) {
+	pipeline, err := NewGeminiPipeline("https://example.com", "key", "vision", "text", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pipeline.httpClient.Timeout != geminiRequestTimeout {
+		t.Fatalf("HTTP timeout = %s, want %s", pipeline.httpClient.Timeout, geminiRequestTimeout)
+	}
+}
+
 func TestGeminiPipelineSeparatesVisionDescriptionFromTextSynthesis(t *testing.T) {
 	mediaDir := t.TempDir()
 	imageBytes := []byte("representative image")

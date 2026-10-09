@@ -11,7 +11,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
+
+const embeddingRequestTimeout = 30 * time.Second
 
 type Embedding struct {
 	Model   string
@@ -37,7 +40,10 @@ func NewHTTPImageEmbedder(endpoint, model string) (*HTTPImageEmbedder, error) {
 	if strings.TrimSpace(model) == "" {
 		return nil, fmt.Errorf("ENV_MOMENTS_EMBEDDING_MODEL is required")
 	}
-	return &HTTPImageEmbedder{endpoint: parsed, model: strings.TrimSpace(model), httpClient: http.DefaultClient}, nil
+	return &HTTPImageEmbedder{
+		endpoint: parsed, model: strings.TrimSpace(model),
+		httpClient: &http.Client{Timeout: embeddingRequestTimeout},
+	}, nil
 }
 
 func (embedder *HTTPImageEmbedder) Embed(ctx context.Context, imagePath string) (Embedding, error) {

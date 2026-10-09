@@ -3,6 +3,7 @@ package moments
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,13 +16,14 @@ import (
 )
 
 type testRepository struct {
-	owners       []string
-	candidates   []Candidate
-	created      []Moment
-	groups       [][]Candidate
-	updated      Moment
-	descriptions []ImageDescription
-	stored       []ImageDescription
+	owners          []string
+	candidates      []Candidate
+	candidateErrors map[string]error
+	created         []Moment
+	groups          [][]Candidate
+	updated         Moment
+	descriptions    []ImageDescription
+	stored          []ImageDescription
 }
 
 type testClusterer struct{ groups [][]Candidate }
@@ -40,10 +42,14 @@ type testTwoStageEnricher struct {
 	described   []string
 	synthesized []ImageDescription
 	mergeGroups [][]int
+	failID      string
 }
 
 func (enricher *testTwoStageEnricher) Describe(_ context.Context, candidate Candidate) (ImageDescription, error) {
 	enricher.described = append(enricher.described, candidate.ID)
+	if candidate.ID == enricher.failID {
+		return ImageDescription{}, errors.New("description failed")
+	}
 	return ImageDescription{Model: "vision", Description: "Description of " + candidate.ID}, nil
 }
 
@@ -91,7 +97,10 @@ func (repository *testRepository) RemoveMomentMedia(context.Context, string, str
 func (repository *testRepository) SetMomentCover(context.Context, string, string, string) error {
 	return nil
 }
-func (repository *testRepository) ListMomentCandidates(context.Context, string) ([]Candidate, error) {
+func (repository *testRepository) ListMomentCandidates(_ context.Context, ownerID string) ([]Candidate, error) {
+	if err := repository.candidateErrors[ownerID]; err != nil {
+		return nil, err
+	}
 	return repository.candidates, nil
 }
 func (repository *testRepository) ListImageDescriptions(context.Context, []string) ([]ImageDescription, error) {
@@ -302,8 +311,8 @@ func TestGenerateSemanticallyMergesFragmentedVisualClusters(t *testing.T) {
 	if len(repository.groups[1]) != 3 || repository.groups[1][0].ID != "exhibit-1" || repository.groups[1][2].ID != "exhibit-3" {
 		t.Fatalf("fragmented event was not merged: %#v", repository.groups[1])
 	}
-	if len(repository.descriptions) != 4 {
-		t.Fatalf("expected each representative to be described once, got %d descriptions", len(repository.descriptions))
+	if len(repository.descriptions) != 9 {
+		t.Fatalf("expected representatives and timeline samples to be described, got %d descriptions", len(repository.descriptions))
 	}
 }
 
@@ -346,11 +355,11 @@ func TestGenerateReusesStoredImageDescriptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created != 1 || len(enricher.described) != 0 || len(repository.descriptions) != 0 {
+	if created != 1 || !reflect.DeepEqual(enricher.described, []string{"second", "third"}) || len(repository.descriptions) != 2 {
 		t.Fatalf("stored description was not reused: created=%d described=%v saved=%v",
 			created, enricher.described, repository.descriptions)
 	}
-	if len(enricher.synthesized) != 1 || enricher.synthesized[0].Description != "Cached description" {
+	if len(enricher.synthesized) != 3 || enricher.synthesized[0].Description != "Cached description" {
 		t.Fatalf("unexpected synthesized descriptions: %#v", enricher.synthesized)
 	}
 }
@@ -465,6 +474,71 @@ func TestSemanticCandidatesSamplesAcrossGroup(t *testing.T) {
 	selected := semanticCandidates(candidates)
 	if len(selected) != MaximumSemanticImages || selected[0].ID != "a" || selected[len(selected)-1].ID != "t" {
 		t.Fatalf("unexpected semantic candidates: %#v", selected)
+	}
+}
+
+func TestRunContinuesAfterOwnerFailure(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Hour)
+	repository := &testRepository{
+		owners:          []string{"broken-owner", "working-owner"},
+		candidateErrors: map[string]error{"broken-owner": errors.New("query failed")},
+		candidates: []Candidate{
+			{ID: "first", CapturedAt: base},
+			{ID: "second", CapturedAt: base.Add(time.Minute)},
+			{ID: "third", CapturedAt: base.Add(2 * time.Minute)},
+		},
+	}
+	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{repository.candidates}}), WithEnricher(testEnricher{confidence: 1}))
+
+	err := service.Run(context.Background())
+
+	if err == nil || len(repository.created) != 1 || repository.created[0].OwnerID != "working-owner" {
+		t.Fatalf("Run() error = %v, created = %#v", err, repository.created)
+	}
+}
+
+func TestPrepareSemanticGroupsSkipsOnlyFailedGroup(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Hour)
+	groups := [][]Candidate{
+		{{ID: "bad", CapturedAt: base}, {ID: "bad-2", CapturedAt: base.Add(time.Minute)}, {ID: "bad-3", CapturedAt: base.Add(2 * time.Minute)}},
+		{{ID: "good", CapturedAt: base.Add(3 * time.Minute)}, {ID: "good-2", CapturedAt: base.Add(4 * time.Minute)}, {ID: "good-3", CapturedAt: base.Add(5 * time.Minute)}},
+	}
+	repository := &testRepository{candidates: append(groups[0], groups[1]...)}
+	enricher := &testTwoStageEnricher{failID: "bad"}
+	service := New(repository, WithClusterer(testClusterer{groups: groups}), WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+
+	created, err := service.generateForOwner(context.Background(), "user-1")
+
+	if err != nil || created != 1 || len(repository.groups) != 1 || repository.groups[0][0].ID != "good" {
+		t.Fatalf("generateForOwner() = %d, %v; groups = %#v", created, err, repository.groups)
+	}
+}
+
+func TestSemanticMergeSortsCandidatesChronologically(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Hour)
+	late := []Candidate{{ID: "late-1", CapturedAt: base.Add(3 * time.Minute)}, {ID: "late-2", CapturedAt: base.Add(4 * time.Minute)}, {ID: "late-3", CapturedAt: base.Add(5 * time.Minute)}}
+	early := []Candidate{{ID: "early-1", CapturedAt: base}, {ID: "early-2", CapturedAt: base.Add(time.Minute)}, {ID: "early-3", CapturedAt: base.Add(2 * time.Minute)}}
+	repository := &testRepository{candidates: append(late, early...)}
+	enricher := &testTwoStageEnricher{mergeGroups: [][]int{{0, 1}}}
+	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{late, early}}), WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+
+	created, err := service.generateForOwner(context.Background(), "user-1")
+
+	if err != nil || created != 1 || repository.groups[0][0].ID != "early-1" || repository.groups[0][5].ID != "late-3" {
+		t.Fatalf("generateForOwner() = %d, %v; group = %#v", created, err, repository.groups)
+	}
+}
+
+func TestClusterMergeCandidatesIncludesTimelineSamples(t *testing.T) {
+	candidates := make([]Candidate, 20)
+	for index := range candidates {
+		candidates[index] = Candidate{ID: string(rune('a' + index)), Representative: index == 0}
+	}
+
+	selected := clusterMergeCandidates(candidates)
+
+	if len(selected) != MaximumSemanticImages || selected[len(selected)-1].ID != "t" {
+		t.Fatalf("unexpected cluster merge candidates: %#v", selected)
 	}
 }
 

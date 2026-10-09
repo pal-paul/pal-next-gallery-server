@@ -44,7 +44,8 @@ authenticator application.
 Set `ENV_AI_FEATURE` under the `server` environment to `YES` to enable CLIP
 embeddings, Gemini-backed Moment generation, and AI metadata suggestions, or
 `NO` to disable all AI behavior while retaining uploads, Albums, and manual
-Moment management. Replace
+Moment management. The embedding service is in the optional `ai` Compose
+profile, so enable that profile only when AI is enabled. Replace
 `ENV_MOMENTS_GEMINI_API_KEY` with a paid-tier Gemini API key. Paid-tier
 requests are not used to improve Google's products; selected photos are still
 sent to Google for processing. A missing key makes Gemini unavailable even when
@@ -73,6 +74,14 @@ file. As an alternative, deploy it from SSH while in the repository directory:
 ```sh
 docker compose -f build/compose.synology.yaml pull
 docker compose -f build/compose.synology.yaml up -d
+```
+
+For an AI-enabled deployment, set `ENV_AI_FEATURE` to `YES` and include the
+profile in both commands:
+
+```sh
+docker compose -f build/compose.synology.yaml --profile ai pull
+docker compose -f build/compose.synology.yaml --profile ai up -d
 ```
 
 The `server` and `embedding-api` services use release-managed `latest` images.

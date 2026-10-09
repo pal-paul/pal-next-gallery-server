@@ -37,6 +37,13 @@ Start PostgreSQL and the application:
 docker compose --env-file .env -f build/compose.yaml up --build
 ```
 
+This starts the core gallery without downloading the CLIP model. To enable AI,
+set `ENV_AI_FEATURE=YES` and start the `ai` profile:
+
+```bash
+docker compose --env-file .env -f build/compose.yaml --profile ai up --build
+```
+
 The OpenCV Moments worker is included in the application image. Selected photos
 are sent to Gemini only when Moment enrichment is enabled.
 

@@ -320,12 +320,13 @@ func (service *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var runErrors []error
 	for _, ownerID := range ownerIDs {
 		if _, err := service.generateForOwner(ctx, ownerID); err != nil {
-			return err
+			runErrors = append(runErrors, fmt.Errorf("generate moments for owner %s: %w", ownerID, err))
 		}
 	}
-	return nil
+	return errors.Join(runErrors...)
 }
 
 func (service *Service) RunScheduled(ctx context.Context, interval time.Duration, onError func(error)) {
@@ -423,7 +424,10 @@ func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Ca
 		descriptionsByID[description.MediaID] = description
 	}
 	newDescriptions := make([]ImageDescription, 0)
+	usableGroups := make([][]Candidate, 0, len(groups))
+	usableDescriptions := make([][]ImageDescription, 0, len(groups))
 	for groupIndex, candidates := range candidatesByGroup {
+		groupFailed := false
 		for _, candidate := range candidates {
 			description, exists := descriptionsByID[candidate.ID]
 			if exists {
@@ -432,17 +436,29 @@ func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Ca
 			}
 			description, err := service.describer.Describe(ctx, candidate)
 			if err != nil {
-				return nil, err
+				slog.WarnContext(ctx, "skipping semantic group after image description failed",
+					"media_id", candidate.ID, "error", err)
+				groupFailed = true
+				break
 			}
 			description.MediaID = candidate.ID
 			descriptionsByGroup[groupIndex] = append(descriptionsByGroup[groupIndex], description)
 			newDescriptions = append(newDescriptions, description)
+		}
+		if !groupFailed {
+			usableGroups = append(usableGroups, groups[groupIndex])
+			usableDescriptions = append(usableDescriptions, descriptionsByGroup[groupIndex])
 		}
 	}
 	if len(newDescriptions) > 0 {
 		if err := service.repository.SaveImageDescriptions(ctx, newDescriptions); err != nil {
 			return nil, err
 		}
+	}
+	groups = usableGroups
+	descriptionsByGroup = usableDescriptions
+	if len(groups) == 0 {
+		return nil, nil
 	}
 	mergedIndexes, err := merger.MergeClusters(ctx, descriptionsByGroup)
 	if err != nil {
@@ -460,6 +476,9 @@ func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Ca
 			merged.candidates = append(merged.candidates, groups[index]...)
 			merged.descriptions = append(merged.descriptions, descriptionsByGroup[index]...)
 		}
+		sort.SliceStable(merged.candidates, func(left, right int) bool {
+			return merged.candidates[left].CapturedAt.Before(merged.candidates[right].CapturedAt)
+		})
 		prepared = append(prepared, merged)
 	}
 	return prepared, nil
@@ -832,18 +851,6 @@ func semanticCandidates(candidates []Candidate) []Candidate {
 }
 
 func clusterMergeCandidates(candidates []Candidate) []Candidate {
-	representatives := make([]Candidate, 0, min(len(candidates), MaximumSemanticImages))
-	for _, candidate := range candidates {
-		if candidate.Representative {
-			representatives = append(representatives, candidate)
-			if len(representatives) == MaximumSemanticImages {
-				break
-			}
-		}
-	}
-	if len(representatives) > 0 {
-		return representatives
-	}
 	return semanticCandidates(candidates)
 }
 
@@ -860,6 +867,10 @@ func currentUser(ctx *gin.Context) auth.User {
 func respond(ctx *gin.Context, value any, err error) {
 	if errors.Is(err, ErrNotFound) {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, ErrCandidatesAssigned) {
+		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	if err != nil {
