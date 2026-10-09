@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: "<change-me>"
       POSTGRES_PASSWORD: "<change-me>"
     ports:
-      - "5510:5432"
+      - "127.0.0.1:5510:5432"
     volumes:
       - type: bind
         source: /volume1/docker/next-gallery-server/postgres
@@ -28,9 +28,7 @@ services:
     restart: unless-stopped
 
   embedding-api:
-    build:
-      context: ..
-      dockerfile: embedding/Dockerfile
+    image: ghcr.io/pal-paul/pal-next-gallery-server-embedding:latest
     environment:
       EMBEDDING_MODEL: openai/clip-vit-base-patch32
     volumes:
@@ -75,6 +73,7 @@ services:
       ENV_ISSUER: "<change-me>"
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
+      ENV_AI_FEATURE: "YES"
       ENV_MOMENTS_INTERVAL: 168h
       ENV_MOMENTS_CV_WORKER: /app/moments-cv-worker
       ENV_MOMENTS_GEMINI_URL: https://generativelanguage.googleapis.com/v1beta

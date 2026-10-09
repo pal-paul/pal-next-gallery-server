@@ -60,10 +60,20 @@ info:
 
     ## Moments
 
-    Moments are separate from albums. Local deterministic generation groups
-    successfully processed photos into capture sessions using a 30-minute gap.
-    Groups require at least two photos and begin as drafts. Deleting a moment
-    never deletes its source photos.
+    Moments are separate from albums. Generation groups successfully processed,
+    unassigned photos from the previous seven days using capture time, visual
+    similarity, GPS, and optional Gemini semantic reconciliation. Generated and
+    manually created Moments begin as drafts. Groups require at least three
+    photos, while manual Moments require at least one. Deleting or declining a
+    draft removes only its Moment membership, making its photos eligible for a
+    later generation run; source photos are never deleted.
+
+    Gemini is not called during upload. When AI is enabled, upload processing
+    stores a local CLIP embedding. Moment generation sends only selected visual
+    representatives without cached descriptions to Gemini Vision, then sends
+    structured descriptions to Gemini Text. User-triggered Moment and Album
+    metadata suggestions randomly sample at most six member photos and reuse
+    cached descriptions.
 
     ## Runtime configuration
 
@@ -85,6 +95,10 @@ info:
       accepts an IANA timezone and defaults to the host's local timezone.
     - `ENV_MOMENTS_INTERVAL` controls background moment generation and defaults
       to `168h`.
+    - `ENV_AI_FEATURE` defaults to `YES`. Setting it to `NO` disables CLIP
+      embeddings, Gemini configuration, scheduled and manual AI generation, and
+      AI metadata suggestions without disabling uploads, Albums, or manual
+      Moment management.
 
     PostgreSQL stores users, sessions, challenges, completed-media metadata,
     sharing, albums, and preferences. Active upload chunks and their recovery
@@ -110,7 +124,7 @@ tags:
   - name: Gallery
     description: User-owned albums, personal favorites, trash, and accessible storage totals.
   - name: Moments
-    description: Deterministic photo sessions stored separately from albums.
+    description: Draft photo sessions, membership editing, AI generation, and metadata suggestions.
   - name: Operations
     description: Container health, readiness, and administrator integrity checks.
   - name: Processing
@@ -122,6 +136,18 @@ tags:
 security:
   - sessionCookie: []
 paths:
+  /features:
+    get:
+      tags: [Moments]
+      operationId: getFeatures
+      summary: Get server feature availability
+      description: The web client uses this capability response to hide AI actions when the global AI feature flag or required providers are unavailable.
+      responses:
+        "200":
+          description: Current optional feature availability.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Features" }
   /healthz:
     get:
       tags: [Operations]
@@ -704,6 +730,24 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Moment" }
         "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Moments]
+      operationId: createMoment
+      summary: Create a manual draft Moment
+      description: Creates a user-edited draft from one or more accessible photos. This operation does not call Gemini.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMomentInput" }
+      responses:
+        "201":
+          description: Manual draft created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Moment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
   /moments/generate:
     post:
       tags: [Moments]
@@ -722,6 +766,8 @@ paths:
                   created: { type: integer, minimum: 0 }
         "403":
           $ref: "#/components/responses/Forbidden"
+        "503":
+          description: AI features are disabled or unavailable.
   /moments/{momentId}:
     parameters:
       - $ref: "#/components/parameters/MomentID"
@@ -756,6 +802,40 @@ paths:
       responses:
         "204": { description: Moment deleted. }
         "404": { $ref: "#/components/responses/ResourceNotFound" }
+  /moments/{momentId}/metadata-suggestion:
+    post:
+      tags: [Moments]
+      operationId: suggestMomentMetadata
+      summary: Suggest a Moment title and description with Gemini
+      description: Randomly samples at most six member photos, reuses cached image descriptions, and returns a suggestion without updating the Moment.
+      parameters:
+        - $ref: "#/components/parameters/MomentID"
+      responses:
+        "200":
+          description: Suggested metadata for user review.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetadataSuggestion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+        "503": { description: AI features are disabled or unavailable. }
+  /albums/{albumId}/metadata-suggestion:
+    post:
+      tags: [Gallery]
+      operationId: suggestAlbumMetadata
+      summary: Suggest an Album title and description with Gemini
+      description: Randomly samples at most six Album photos, reuses cached image descriptions, and returns a suggestion without updating the Album. The user may edit and save the result normally.
+      parameters:
+        - $ref: "#/components/parameters/AlbumID"
+      responses:
+        "200":
+          description: Suggested metadata for user review.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetadataSuggestion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
+        "503": { description: AI features are disabled or unavailable. }
   /moments/{momentId}/media:
     post:
       tags: [Moments]
@@ -1698,6 +1778,14 @@ components:
         format: int64
         minimum: 0
   schemas:
+    Features:
+      type: object
+      additionalProperties: false
+      required: [ai]
+      properties:
+        ai:
+          type: boolean
+          description: True only when the global AI flag and Gemini providers are available.
     LoginRequest:
       type: object
       additionalProperties: false
@@ -1934,6 +2022,27 @@ components:
         title: { type: string, minLength: 1 }
         description: { type: string }
         status: { type: string, enum: [draft, published, archived] }
+    CreateMomentInput:
+      type: object
+      additionalProperties: false
+      required: [mediaIds]
+      properties:
+        title:
+          type: string
+          description: Optional title; blank values become Untitled moment.
+        description: { type: string }
+        mediaIds:
+          type: array
+          minItems: 1
+          items: { type: string, minLength: 1 }
+    MetadataSuggestion:
+      type: object
+      additionalProperties: false
+      required: [title, description, confidence]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
     MomentMediaInput:
       type: object
       additionalProperties: false

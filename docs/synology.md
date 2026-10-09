@@ -18,6 +18,7 @@ account used by Container Manager:
 ```text
 /volume1/docker/next-gallery-server/postgres
 /volume1/docker/next-gallery-server/backups
+/volume1/docker/next-gallery-server/models
 /volume1/media/gallery
 /volume1/media/import
 /volume1/media/tmp
@@ -40,10 +41,14 @@ the `postgres` service. Use a bootstrap password of at least 12 characters for
 `ENV_ADMIN_PASSWORD`. Set `ENV_ISSUER` to the name that should appear in the
 authenticator application.
 
-Replace `ENV_MOMENTS_GEMINI_API_KEY` with a paid-tier Gemini API key. Paid-tier
+Set `ENV_AI_FEATURE` under the `server` environment to `YES` to enable CLIP
+embeddings, Gemini-backed Moment generation, and AI metadata suggestions, or
+`NO` to disable all AI behavior while retaining uploads, Albums, and manual
+Moment management. Replace
+`ENV_MOMENTS_GEMINI_API_KEY` with a paid-tier Gemini API key. Paid-tier
 requests are not used to improve Google's products; selected photos are still
-sent to Google for processing. Leave the value empty to disable automatic
-Moment enrichment.
+sent to Google for processing. A missing key makes Gemini unavailable even when
+the global flag is enabled.
 
 Set `ENV_CORS_ALLOWED_ORIGINS` to the exact browser origin, including scheme and
 port but excluding the path and trailing slash. For example:
@@ -70,9 +75,10 @@ docker compose -f build/compose.synology.yaml pull
 docker compose -f build/compose.synology.yaml up -d
 ```
 
-The `server` service uses the release-managed `latest` image. Publish a new
-repository release containing the Moments implementation before deploying this
-configuration to a remote NAS; the image publishing workflow updates that tag.
+The `server` and `embedding-api` services use release-managed `latest` images.
+Publish a new non-prerelease repository release before deploying this
+configuration to a remote NAS; the image publishing workflow updates both
+tags.
 
 Verify that the server has outbound connectivity to the Gemini API:
 
@@ -127,14 +133,23 @@ user.
 
 Moment generation considers unassigned, processed photos captured within the
 previous seven days. A group must contain at least three photos. Gemini receives
-images sampled across the group and the Moment is created only when at least
-65% of the supplied photos support one shared description. Each photo can
-belong to only one Moment.
+selected representatives that do not already have cached descriptions, then a
+text-only request generates metadata. The Moment is created as a draft only
+when confidence is at least `0.65`. Each photo can belong to only one generated
+Moment for that owner. Deleting a declined draft preserves the source photos and
+returns them to the future candidate pool.
+
+Gemini is not called for each upload. With AI enabled, the private CPU CLIP
+service embeds the generated thumbnail during normal media processing. Moment
+generation and user-triggered Moment or Album metadata suggestions call Gemini
+later. Metadata suggestions randomly sample at most six member photos and reuse
+cached descriptions.
 
 Change `ENV_MOMENTS_INTERVAL` to control background generation; `168h` runs it
-weekly. The Compose project builds a private CPU CLIP service and caches its
-model under `/volume1/docker/next-gallery-server/models`. The gallery waits for
-that service to become healthy before processing uploads.
+weekly. The Compose project pulls the private multi-architecture CPU CLIP image
+from GHCR and caches its model under
+`/volume1/docker/next-gallery-server/models`. The gallery waits for that service
+to become healthy before processing uploads.
 
 ## Reverse proxy
 

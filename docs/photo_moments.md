@@ -1,8 +1,10 @@
 # Photo Moments: Production Architecture and Flow
 
+<!-- markdownlint-disable MD013 -->
+
 ## 1. Purpose
 
-This document describes how photo moments are created, stored, operated, and scaled in production. It reflects the server implementation validated on **2026-10-09**.
+This document describes how photo moments are created, stored, operated, and scaled in the current implementation.
 
 The pipeline is local-first:
 
@@ -16,25 +18,32 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 
 ## 2. Production Status
 
-| Capability                               | Status                   | Production behavior                                                                                                        | Follow-up                                                           |
-| ---------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Resumable upload                         | Implemented              | Authenticated chunked uploads are assembled, SHA-256 verified, and persisted                                               | None for the moment pipeline                                        |
-| Processing queue                         | Implemented              | PostgreSQL queue with atomic claims, stale-claim recovery, retries, and manual retry                                       | Add metrics and dead-letter alerting                                |
-| Metadata and thumbnails                  | Implemented              | `ffprobe` extracts technical metadata and `ffmpeg` creates bounded JPEG thumbnails                                         | Physically rotate pixels if a consumer ignores orientation metadata |
-| Exact duplicates                         | Implemented              | Owner-scoped SHA-256 checks reject duplicate upload creation                                                               | Add a retain-and-review mode if desired                             |
-| Near duplicates                          | Implemented              | Persisted dHash values create owner-scoped groups at Hamming distance `<= 5`                                               | Add duplicate review UI                                             |
-| Image embeddings                         | Optional                 | An HTTP provider returns versioned vectors stored in PostgreSQL                                                            | Add an ANN index when bounded scans are insufficient                |
-| Visual clustering                        | Optional                 | The production image packages an OpenCV executable that performs similarity scoring and mutual-reachability MST clustering | Consider canonical HDBSCAN if needed                                |
-| Temporal clustering fallback             | Implemented              | Without the OpenCV worker, candidates are split at 30-minute gaps                                                          | This is less accurate than the full profile                         |
-| Representative selection                 | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images                                                       | Tune weights against labeled collections                            |
-| Structured image descriptions            | Optional                 | Gemini describes each selected semantic image and results are persisted                                                    | Add explicit prompt/schema version values                           |
-| Metadata synthesis                       | Optional                 | A separate Gemini text request creates title, description, and confidence                                                  | Add independent retryable AI jobs                                   |
-| Moment persistence                       | Implemented              | Advisory locking and one transaction prevent duplicate ownership assignment                                                | None                                                                |
-| Deterministic moment creation without AI | Gap                      | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured            | Add deterministic title/description fallback                        |
+<!-- markdownlint-disable MD060 -->
+
+| Capability                               | Status                   | Production behavior                                                                                                           | Follow-up                                                           |
+| ---------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Resumable upload                         | Implemented              | Authenticated chunked uploads are assembled, SHA-256 verified, and persisted                                                  | None for the moment pipeline                                        |
+| Processing queue                         | Implemented              | PostgreSQL queue with atomic claims, stale-claim recovery, retries, and manual retry                                          | Add metrics and dead-letter alerting                                |
+| Metadata and thumbnails                  | Implemented              | `ffprobe` extracts technical metadata and `ffmpeg` creates bounded JPEG thumbnails                                            | Physically rotate pixels if a consumer ignores orientation metadata |
+| Exact duplicates                         | Implemented              | Owner-scoped SHA-256 checks reject duplicate upload creation                                                                  | Add a retain-and-review mode if desired                             |
+| Near duplicates                          | Implemented              | Persisted dHash values create owner-scoped groups at Hamming distance `<= 5`                                                  | Add duplicate review UI                                             |
+| Image embeddings                         | Optional                 | An HTTP provider returns versioned vectors stored in PostgreSQL                                                               | Add an ANN index when bounded scans are insufficient                |
+| Visual clustering                        | Optional                 | The production image packages an OpenCV executable that performs raw-cosine similarity scoring and average-link agglomeration | Tune thresholds against labeled collections                         |
+| Temporal clustering fallback             | Implemented              | Without the OpenCV worker, candidates are split at 30-minute gaps                                                             | This is less accurate than the full profile                         |
+| Representative selection                 | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images                                                          | Tune weights against labeled collections                            |
+| Structured image descriptions            | Optional                 | Gemini describes each selected semantic image and results are persisted                                                       | Add explicit prompt/schema version values                           |
+| Metadata synthesis                       | Optional                 | A separate Gemini text request creates title, description, and confidence                                                     | Add independent retryable AI jobs                                   |
+| Moment persistence                       | Implemented              | Advisory locking and one transaction prevent duplicate ownership assignment                                                   | None                                                                |
+| Manual Moment lifecycle                  | Implemented              | Manual creation, media editing, covers, publish, decline/delete, and candidate reuse                                          | Add split workflow if needed                                        |
+| Album and Moment metadata suggestions    | Optional                 | Up to six random members are sampled; cached descriptions are reused and suggestions remain editable                          | Add independent retryable AI jobs                                   |
+| Global AI capability flag                | Implemented              | `ENV_AI_FEATURE=NO` disables CLIP, Gemini, AI discovery, and suggestions without disabling manual workflows                   | None                                                                |
+| Deterministic moment creation without AI | Gap                      | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured               | Add deterministic title/description fallback                        |
+
+<!-- markdownlint-enable MD060 -->
 
 ### Important deployment reality
 
-The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path. Gemini enrichment is enabled when an API key is configured.
+The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path. The full AI path also requires `ENV_AI_FEATURE` to be enabled and a Gemini API key to be configured.
 
 The Compose stack includes a private CPU CLIP service. It caches model weights in a persistent volume and stores normalized image vectors in PostgreSQL during media processing.
 
@@ -60,7 +69,7 @@ Behavior:
 Adds:
 
 - OpenCV moment worker built with `-tags opencv`
-- SigLIP/CLIP-compatible embedding HTTP service
+- CLIP embedding HTTP service using `openai/clip-vit-base-patch32`
 - Gemini API access
 - Paid-tier Gemini API key
 - Gemini vision and text models
@@ -137,15 +146,16 @@ flowchart TD
     N[Time-gap clustering]
     O[Visual, hash, time, GPS clustering]
     P[Select semantic images, maximum 15]
-    Q{Gemini API key configured?}
+    Q{AI enabled and Gemini configured?}
     R[Skip automatic moment creation]
-    S[Describe each selected image]
+    S[Load cached descriptions<br/>and describe cache misses]
     T[Persist structured descriptions]
+    T2[Semantically reconcile clusters<br/>with deterministic event contexts]
     U[Synthesize title, description, confidence]
     V{Confidence at least 0.65<br/>and description non-empty?}
     W[Skip candidate group]
     X[Create draft moment transactionally]
-    Y[User reviews, edits, publishes, or archives]
+    Y[User reviews, edits, and publishes<br/>or declines by deleting draft]
 
     A --> B
     B -->|yes| C
@@ -158,7 +168,7 @@ flowchart TD
     M -->|yes| O --> P
     P --> Q
     Q -->|no| R
-    Q -->|yes| S --> T --> U --> V
+    Q -->|yes| S --> T --> T2 --> U --> V
     V -->|no| W
     V -->|yes| X --> Y
 ```
@@ -281,7 +291,7 @@ flowchart LR
     Temporal[Sort by capture time<br/>split at gaps over 30 minutes]
     Features[Read image and calculate<br/>histogram, dHash, sharpness, exposure]
     Similarity[Weighted pair similarity]
-    Density[Mutual-reachability graph<br/>minimum spanning tree and threshold cut]
+    Density[Average-link agglomeration<br/>using raw cosine similarity]
     Groups[Exclusive groups]
     Score[Score and mark representatives]
 
@@ -307,7 +317,10 @@ Current limits:
 - Missing GPS contributes a neutral `0.5` location similarity.
 - MST edges are retained at similarity `>= 0.62`.
 
-The implementation borrows the mutual-reachability and MST construction used by density clustering, but it is not canonical HDBSCAN: it does not build a condensed hierarchy, calculate cluster stability, assign soft membership, or emit an explicit noise label.
+Clusters merge only when their average cross-cluster similarity meets the
+configured threshold. Average linkage avoids the chaining behavior of
+single-link clustering, while raw cosine values avoid inflating weak visual
+matches.
 
 ### 8.4 Representative selection
 
@@ -343,11 +356,17 @@ sequenceDiagram
     participant Text as Gemini text model
 
     loop each selected semantic image, maximum 15
-        Moments->>Media: Read selected image
-        Moments->>Vision: Image plus strict JSON prompt
-        Vision-->>Moments: Structured image description
+        Moments->>DB: Look up cached description
+        opt cache miss
+            Moments->>Media: Read selected image
+            Moments->>Vision: Image plus strict JSON prompt
+            Vision-->>Moments: Structured image description
+        end
     end
     Moments->>DB: Upsert all descriptions in one transaction
+    Moments->>Text: Description clusters for semantic reconciliation
+    Text-->>Moments: Proposed cluster merges
+    Moments->>Moments: Apply event context, time, and GPS constraints
     Moments->>Text: Descriptions plus date and location context, no images
     Text-->>Moments: Title, description, confidence
     alt confidence >= 0.65 and description is non-empty
@@ -373,6 +392,11 @@ sequenceDiagram
 
 The vision prompt requires visible evidence only. Unknown details must be empty, and the model must not identify people or invent dates, places, activities, or weather.
 
+The service classifies event context as `public_venue`, `outdoor_activity`,
+`home_or_private`, `event_or_celebration`, `travel`, or `unknown`. Venue words
+are one signal alongside `location_type`, visual clusters, capture time, and
+GPS. `unknown` is retained when evidence is insufficient.
+
 ### 9.2 Synthesis contract
 
 ```json
@@ -392,6 +416,14 @@ The text request contains no images. Confidence is normalized to `0..1`; values 
 - Model failures are logged and processing continues with the next group.
 - AI requests do not currently have their own durable queue or retry policy.
 
+### 9.4 User-triggered metadata suggestions
+
+Moment and Album suggestions use the same description cache. The repository
+selects at most six random collection members. Gemini Vision runs only for
+sampled images without a cached description, followed by one text synthesis
+request. The returned title, description, and confidence are not persisted
+until the user accepts or edits and saves them.
+
 ## 10. Transactional Moment Creation
 
 ```mermaid
@@ -410,7 +442,12 @@ flowchart TD
     D -->|yes| F --> G --> H
 ```
 
-The advisory lock serializes generation per owner. Manual edits set `user_edited = true`; title, description, status, membership, and cover remain user-controlled through authenticated endpoints.
+The advisory lock serializes generation per owner. Generated Moments start as
+drafts. Manual Moments require at least one photo, start as drafts, and set
+`user_edited = true`. Title, description, status, membership, and cover remain
+user-controlled through authenticated endpoints. Publishing sets the status to
+`published`; declining deletes the draft and its membership rows without
+deleting photos, allowing them to participate in a later generation run.
 
 ## 11. Data Model
 
@@ -493,14 +530,20 @@ erDiagram
 
 ## 12. Scheduling and Triggers
 
-| Trigger           | Default                             | Behavior                                          |
-| ----------------- | ----------------------------------- | ------------------------------------------------- |
-| Processing worker | Continuous                          | Drains queued jobs; waits five seconds when idle  |
-| Moment generation | Every `168h`                        | Runs for all users after each interval tick       |
-| Manual generation | `POST /moments/generate`            | Runs immediately for the authenticated owner      |
-| Automatic albums  | Daily at `02:00` local time         | Separate feature; reconciles albums, not moments  |
-| NAS import        | Same daily schedule when configured | Discovers imported media before normal processing |
-| Cleanup           | Every `1h`                          | Cleans expired sessions and abandoned uploads     |
+<!-- markdownlint-disable MD060 -->
+
+| Trigger             | Default                             | Behavior                                            |
+| ------------------- | ----------------------------------- | --------------------------------------------------- |
+| Processing worker   | Continuous                          | Drains queued jobs; waits five seconds when idle    |
+| Moment generation   | Every `168h`                        | Runs for all users after each interval tick         |
+| Manual generation   | `POST /moments/generate`            | Runs immediately for the authenticated owner        |
+| Manual creation     | `POST /moments`                     | Creates a user-edited draft without calling AI      |
+| Metadata suggestion | Explicit Moment or Album action     | Samples up to six members and returns editable text |
+| Automatic albums    | Daily at `02:00` local time         | Separate feature; reconciles albums, not moments    |
+| NAS import          | Same daily schedule when configured | Discovers imported media before normal processing   |
+| Cleanup             | Every `1h`                          | Cleans expired sessions and abandoned uploads       |
+
+<!-- markdownlint-enable MD060 -->
 
 The moment scheduler does not run immediately at startup. Operators can use the manual endpoint for an initial run or wait for the first interval.
 
@@ -519,16 +562,21 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 
 ### Moment pipeline settings
 
-| Variable                      | Default       | Effect when empty                                       |
-| ----------------------------- | ------------- | ------------------------------------------------------- |
-| `ENV_MOMENTS_INTERVAL`        | `168h`        | Invalid or non-positive values stop startup             |
-| `ENV_MOMENTS_CV_WORKER`       | empty         | Uses temporal clustering                                |
-| `ENV_MOMENTS_EMBEDDING_URL`   | `http://embedding-api:8000/embed` | Private Compose embedding endpoint       |
-| `ENV_MOMENTS_EMBEDDING_MODEL` | `openai/clip-vit-base-patch32`    | CLIP model loaded by the endpoint         |
-| `ENV_MOMENTS_GEMINI_API_KEY`   | empty                                      | Automatic moment creation is skipped                    |
-| `ENV_MOMENTS_GEMINI_URL`       | Google Gemini API                           | Gemini API base URL                                     |
-| `ENV_MOMENTS_GEMINI_MODEL`     | `gemini-3.5-flash-lite`                     | Vision model identifier                                 |
-| `ENV_MOMENTS_GEMINI_TEXT_MODEL`| `gemini-3.5-flash-lite`                     | Text synthesis model identifier                         |
+<!-- markdownlint-disable MD060 -->
+
+| Variable                        | Default                           | Effect when empty                                                 |
+| ------------------------------- | --------------------------------- | ----------------------------------------------------------------- |
+| `ENV_AI_FEATURE`                | `YES`                             | `NO` disables every AI-backed path                                |
+| `ENV_MOMENTS_INTERVAL`          | `168h`                            | Invalid or non-positive values stop startup                       |
+| `ENV_MOMENTS_CV_WORKER`         | empty                             | Uses temporal clustering                                          |
+| `ENV_MOMENTS_EMBEDDING_URL`     | `http://embedding-api:8000/embed` | Private Compose embedding endpoint                                |
+| `ENV_MOMENTS_EMBEDDING_MODEL`   | `openai/clip-vit-base-patch32`    | CLIP model loaded by the endpoint                                 |
+| `ENV_MOMENTS_GEMINI_API_KEY`    | empty                             | Automatic moment creation is skipped                              |
+| `ENV_MOMENTS_GEMINI_URL`        | Google Gemini API                 | Gemini API base URL                                               |
+| `ENV_MOMENTS_GEMINI_MODEL`      | `gemini-3.5-flash-lite`           | Go default; supplied Compose files select `gemini-2.5-flash-lite` |
+| `ENV_MOMENTS_GEMINI_TEXT_MODEL` | `gemini-3.5-flash-lite`           | Go default; supplied Compose files select `gemini-2.5-flash-lite` |
+
+<!-- markdownlint-enable MD060 -->
 
 ### Fixed algorithm values
 
@@ -540,6 +588,7 @@ These values are currently compile-time constants:
 | Temporal fallback gap         | 30 minutes |
 | Minimum group size            | 3 images   |
 | Maximum semantic images       | 15         |
+| Metadata suggestion sample    | 6 images   |
 | Minimum synthesis confidence  | 0.65       |
 | Near-duplicate dHash distance | 5 bits     |
 | CV similarity threshold       | 0.62       |
@@ -657,6 +706,7 @@ All routes require an authenticated session.
 | Method   | Route                                | Purpose                                           |
 | -------- | ------------------------------------ | ------------------------------------------------- |
 | `GET`    | `/moments`                           | List the current user's moments                   |
+| `POST`   | `/moments`                           | Create a manual draft from one or more photos     |
 | `POST`   | `/moments/generate`                  | Run generation immediately for the current user   |
 | `GET`    | `/moments/:id`                       | Get a moment and ordered media                    |
 | `PATCH`  | `/moments/:id`                       | Update title, description, or status              |
@@ -664,6 +714,9 @@ All routes require an authenticated session.
 | `POST`   | `/moments/:id/media`                 | Add accessible image media                        |
 | `DELETE` | `/moments/:id/media/:mediaID`        | Remove media while preserving at least one member |
 | `PATCH`  | `/moments/:id/cover`                 | Select a member as cover                          |
+| `POST`   | `/moments/:id/metadata-suggestion`   | Return editable Gemini metadata without saving it |
+| `POST`   | `/albums/:id/metadata-suggestion`    | Return editable Gemini metadata without saving it |
+| `GET`    | `/features`                          | Report whether AI actions are available           |
 | `GET`    | `/media/files/:id/processing-status` | Read media processing status                      |
 | `GET`    | `/admin/processing-jobs`             | Inspect recent jobs as an administrator           |
 | `POST`   | `/admin/processing-jobs/:id/retry`   | Retry a failed processing job                     |
@@ -678,12 +731,15 @@ Before enabling scheduled generation in production, verify:
 4. Near-duplicate secondary images are absent from candidate queries.
 5. Embeddings persist with model, version, dimensions, and vector when enabled.
 6. The OpenCV worker returns every candidate exactly once and chooses expected representatives on a labeled fixture.
-7. Vision inference receives one selected image per request.
+7. Vision inference receives one selected image per cache-miss request.
 8. Text synthesis receives descriptions and no image payload.
 9. Low-confidence output does not create a moment.
 10. Concurrent generation does not assign one photo twice for the same owner.
-11. User edits set `user_edited` and remain authoritative.
-12. Backup restoration recovers media, processing state, descriptions, moments, and memberships consistently.
+11. Manual Moments start as drafts and require at least one image.
+12. Deleting a declined draft preserves its photos and makes them eligible for a future run.
+13. Metadata suggestions inspect at most six random members and do not persist until saved.
+14. User edits set `user_edited` and remain authoritative.
+15. Backup restoration recovers media, processing state, descriptions, moments, and memberships consistently.
 
 Repository validation commands:
 
@@ -696,12 +752,11 @@ go test -tags opencv ./app/processing ./app/db ./app/moments ./cmd/moments-cv-wo
 
 ### Production hardening
 
-1. Package the OpenCV worker and required native libraries in a production image or dedicated worker image.
-2. Add a startup check for Gemini configuration without sending a photo.
-3. Add a durable queue for image descriptions and text synthesis.
-4. Add deterministic moment metadata when AI is disabled.
-5. Add metrics, traces, scheduler-run records, and operational dashboards.
-6. Persist explicit prompt and schema versions for image descriptions.
+1. Add a startup check for Gemini configuration without sending a photo.
+2. Add a durable queue for image descriptions and text synthesis.
+3. Add deterministic moment metadata when AI is disabled.
+4. Add metrics, traces, scheduler-run records, and operational dashboards.
+5. Persist explicit prompt and schema versions for image descriptions.
 
 ### Product capabilities
 
