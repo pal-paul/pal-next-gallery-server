@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pal-paul/go-libraries v1.0.3
 	github.com/pquerna/otp v1.5.0
+	gocv.io/x/gocv v0.42.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 )
@@ -40,7 +41,6 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.2 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.9.1 // indirect
-	gocv.io/x/gocv v0.42.0 // indirect
 	golang.org/x/arch v0.31.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
