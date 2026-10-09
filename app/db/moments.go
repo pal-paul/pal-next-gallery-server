@@ -193,6 +193,34 @@ func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string)
 	return candidates, rows.Err()
 }
 
+func (store *Postgres) ListImageDescriptions(ctx context.Context, mediaIDs []string) ([]moments.ImageDescription, error) {
+	if len(mediaIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := store.pool.Query(ctx, `SELECT DISTINCT ON (description.upload_id)
+		description.upload_id, description.model, description.version, description.people,
+		description.activities, description.location_type, description.objects, description.scene,
+		description.weather, description.description
+		FROM media_image_descriptions description
+		WHERE description.upload_id = ANY($1)
+		ORDER BY description.upload_id, description.created_at DESC`, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	descriptions := make([]moments.ImageDescription, 0, len(mediaIDs))
+	for rows.Next() {
+		var description moments.ImageDescription
+		if err := rows.Scan(&description.MediaID, &description.Model, &description.Version, &description.People,
+			&description.Activities, &description.LocationType, &description.Objects, &description.Scene,
+			&description.Weather, &description.Description); err != nil {
+			return nil, err
+		}
+		descriptions = append(descriptions, description)
+	}
+	return descriptions, rows.Err()
+}
+
 func (store *Postgres) SaveImageDescriptions(ctx context.Context, descriptions []moments.ImageDescription) error {
 	transaction, err := store.pool.Begin(ctx)
 	if err != nil {

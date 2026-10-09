@@ -132,9 +132,9 @@ images sampled across the group and the Moment is created only when at least
 belong to only one Moment.
 
 Change `ENV_MOMENTS_INTERVAL` to control background generation; `168h` runs it
-weekly. The embedding endpoint is disabled by default; set
-`ENV_MOMENTS_EMBEDDING_URL` only when a compatible private SigLIP/CLIP service
-is available.
+weekly. The Compose project builds a private CPU CLIP service and caches its
+model under `/volume1/docker/next-gallery-server/models`. The gallery waits for
+that service to become healthy before processing uploads.
 
 ## Reverse proxy
 

@@ -95,6 +95,29 @@ func (enricher *GeminiEnricher) Synthesize(ctx context.Context, moment Moment, d
 	return decodeMetadata(content)
 }
 
+func (enricher *GeminiEnricher) MergeClusters(ctx context.Context, clusters [][]ImageDescription) ([][]int, error) {
+	structured, err := json.Marshal(clusters)
+	if err != nil {
+		return nil, err
+	}
+	prompt := clusterMergePrompt(string(structured))
+	content, err := enricher.generate(ctx, enricher.textModel, prompt, nil, clusterMergeSchema())
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Groups [][]int `json:"groups"`
+	}
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return nil, fmt.Errorf("decode Gemini cluster merge: %w", err)
+	}
+	return result.Groups, nil
+}
+
+func clusterMergePrompt(structuredClusters string) string {
+	return fmt.Sprintf(`Group visual clusters that depict the same real-world event. The clusters are indexed from 0 and contain independent photo descriptions: %s. First partition clusters by incompatible event context: domestic indoor activity, outdoor nature or garden visit, and indoor public-venue visit are separate events. Never merge an outdoor cluster with an indoor cluster. Then merge compatible fragments within each context. These are visual clusters, not event boundaries: one indoor public-venue outing can include an atrium, storefronts, cultural exhibits, statues, portraits, decorative displays, and close-up detail photos. Differences between those sub-scenes are not evidence of separate events. Attach singleton decor or detail clusters to the compatible venue event instead of leaving them isolated. Keep truly unrelated activities or venues separate, but do not split one compatible venue visit merely because its rooms, exhibits, or subjects look different. Return every cluster index exactly once in JSON with a groups array of index arrays.`, structuredClusters)
+}
+
 type geminiImage struct {
 	MIMEType string `json:"mime_type"`
 	Data     string `json:"data"`
@@ -183,6 +206,22 @@ func metadataSchema() map[string]any {
 			"confidence": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 		},
 		"required": []string{"title", "description", "confidence"},
+	}
+}
+
+func clusterMergeSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"groups": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "integer", "minimum": 0},
+				},
+			},
+		},
+		"required": []string{"groups"},
 	}
 }
 

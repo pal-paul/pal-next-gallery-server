@@ -20,6 +20,27 @@ services:
         max-size: ${LOG_MAX_SIZE}
         max-file: "${LOG_MAX_FILES}"
 
+  embedding-api:
+    build:
+      context: ..
+      dockerfile: embedding/Dockerfile
+    environment:
+      EMBEDDING_MODEL: ${ENV_MOMENTS_EMBEDDING_MODEL:-openai/clip-vit-base-patch32}
+    volumes:
+      - embedding_models:/models/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5m
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE}
+        max-file: "${LOG_MAX_FILES}"
+    restart: ${COMPOSE_RESTART_POLICY}
+
   server:
     image: ${SERVER_IMAGE}
     build:
@@ -40,8 +61,8 @@ services:
       ENV_MOMENTS_GEMINI_API_KEY: ${ENV_MOMENTS_GEMINI_API_KEY:-}
       ENV_MOMENTS_GEMINI_MODEL: ${ENV_MOMENTS_GEMINI_MODEL:-gemini-2.5-flash-lite}
       ENV_MOMENTS_GEMINI_TEXT_MODEL: ${ENV_MOMENTS_GEMINI_TEXT_MODEL:-gemini-2.5-flash-lite}
-      ENV_MOMENTS_EMBEDDING_URL: ${ENV_MOMENTS_EMBEDDING_URL:-}
-      ENV_MOMENTS_EMBEDDING_MODEL: ${ENV_MOMENTS_EMBEDDING_MODEL:-siglip}
+      ENV_MOMENTS_EMBEDDING_URL: ${ENV_MOMENTS_EMBEDDING_URL:-http://embedding-api:8000/embed}
+      ENV_MOMENTS_EMBEDDING_MODEL: ${ENV_MOMENTS_EMBEDDING_MODEL:-openai/clip-vit-base-patch32}
     ports:
       - "${ENV_PORT}:${ENV_PORT}"
     volumes:
@@ -49,6 +70,8 @@ services:
       - upload_tmp:${ENV_TMP_DIR}
     depends_on:
       postgres:
+        condition: service_healthy
+      embedding-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${ENV_PORT}/readyz"]
@@ -65,5 +88,6 @@ services:
 
 volumes:
   postgres_data:
+  embedding_models:
   media_data:
   upload_tmp:

@@ -3,6 +3,7 @@ package moments
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -75,6 +76,7 @@ type Repository interface {
 	RemoveMomentMedia(context.Context, string, string, string) error
 	SetMomentCover(context.Context, string, string, string) error
 	ListMomentCandidates(context.Context, string) ([]Candidate, error)
+	ListImageDescriptions(context.Context, []string) ([]ImageDescription, error)
 	SaveImageDescriptions(context.Context, []ImageDescription) error
 	CreateGeneratedMoment(context.Context, Moment, []Candidate) error
 }
@@ -210,13 +212,23 @@ func (service *Service) generateForOwner(ctx context.Context, ownerID string) (i
 	if err != nil {
 		return 0, err
 	}
+	prepared, err := service.prepareSemanticGroups(ctx, groups)
+	if err != nil {
+		return 0, err
+	}
 	created := 0
-	for _, group := range groups {
+	for _, preparedGroup := range prepared {
+		group := preparedGroup.candidates
 		if len(group) < MinimumMomentImages || (service.enricher == nil && (service.describer == nil || service.synthesizer == nil)) {
 			continue
 		}
 		moment := generatedMoment(ownerID, group)
-		metadata, err := service.enrichMoment(ctx, moment, semanticCandidates(group))
+		var metadata Metadata
+		if preparedGroup.descriptions != nil {
+			metadata, err = service.synthesizer.Synthesize(ctx, moment, preparedGroup.descriptions)
+		} else {
+			metadata, err = service.enrichMoment(ctx, moment, semanticCandidates(group))
+		}
 		if err != nil {
 			slog.WarnContext(ctx, "moment metadata enrichment failed", "owner_id", ownerID, "error", err)
 			continue
@@ -236,6 +248,169 @@ func (service *Service) generateForOwner(ctx context.Context, ownerID string) (i
 		created++
 	}
 	return created, nil
+}
+
+type semanticGroup struct {
+	candidates   []Candidate
+	descriptions []ImageDescription
+}
+
+func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Candidate) ([]semanticGroup, error) {
+	merger, ok := service.synthesizer.(SemanticClusterMerger)
+	if !ok || service.describer == nil {
+		prepared := make([]semanticGroup, len(groups))
+		for index, group := range groups {
+			prepared[index].candidates = group
+		}
+		return prepared, nil
+	}
+	descriptionsByGroup := make([][]ImageDescription, len(groups))
+	candidatesByGroup := make([][]Candidate, len(groups))
+	mediaIDs := make([]string, 0)
+	for groupIndex, group := range groups {
+		candidatesByGroup[groupIndex] = clusterMergeCandidates(group)
+		for _, candidate := range candidatesByGroup[groupIndex] {
+			mediaIDs = append(mediaIDs, candidate.ID)
+		}
+	}
+	storedDescriptions, err := service.repository.ListImageDescriptions(ctx, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	descriptionsByID := make(map[string]ImageDescription, len(storedDescriptions))
+	for _, description := range storedDescriptions {
+		descriptionsByID[description.MediaID] = description
+	}
+	newDescriptions := make([]ImageDescription, 0)
+	for groupIndex, candidates := range candidatesByGroup {
+		for _, candidate := range candidates {
+			description, exists := descriptionsByID[candidate.ID]
+			if exists {
+				descriptionsByGroup[groupIndex] = append(descriptionsByGroup[groupIndex], description)
+				continue
+			}
+			description, err := service.describer.Describe(ctx, candidate)
+			if err != nil {
+				return nil, err
+			}
+			description.MediaID = candidate.ID
+			descriptionsByGroup[groupIndex] = append(descriptionsByGroup[groupIndex], description)
+			newDescriptions = append(newDescriptions, description)
+		}
+	}
+	if len(newDescriptions) > 0 {
+		if err := service.repository.SaveImageDescriptions(ctx, newDescriptions); err != nil {
+			return nil, err
+		}
+	}
+	mergedIndexes, err := merger.MergeClusters(ctx, descriptionsByGroup)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClusterPartition(mergedIndexes, len(groups)); err != nil {
+		return nil, err
+	}
+	mergedIndexes = mergeCompatiblePublicVenueGroups(mergedIndexes, groups, descriptionsByGroup)
+	prepared := make([]semanticGroup, 0, len(mergedIndexes))
+	for _, indexes := range mergedIndexes {
+		var merged semanticGroup
+		for _, index := range indexes {
+			merged.candidates = append(merged.candidates, groups[index]...)
+			merged.descriptions = append(merged.descriptions, descriptionsByGroup[index]...)
+		}
+		prepared = append(prepared, merged)
+	}
+	return prepared, nil
+}
+
+func mergeCompatiblePublicVenueGroups(partition [][]int, groups [][]Candidate, descriptions [][]ImageDescription) [][]int {
+	merged := make([][]int, len(partition))
+	for index := range partition {
+		merged[index] = append([]int(nil), partition[index]...)
+	}
+	for left := 0; left < len(merged); left++ {
+		if !isPublicVenuePartition(merged[left], descriptions) {
+			continue
+		}
+		for right := left + 1; right < len(merged); {
+			if isPublicVenuePartition(merged[right], descriptions) &&
+				partitionsWithinGap(merged[left], merged[right], groups, SessionGap) {
+				merged[left] = append(merged[left], merged[right]...)
+				merged = append(merged[:right], merged[right+1:]...)
+				continue
+			}
+			right++
+		}
+	}
+	return merged
+}
+
+func isPublicVenuePartition(indexes []int, descriptions [][]ImageDescription) bool {
+	for _, index := range indexes {
+		if index < 0 || index >= len(descriptions) || !isPublicVenueCluster(descriptions[index]) {
+			return false
+		}
+	}
+	return len(indexes) > 0
+}
+
+func isPublicVenueCluster(descriptions []ImageDescription) bool {
+	var text strings.Builder
+	for _, description := range descriptions {
+		fmt.Fprintf(&text, " %s %s %s %s %s", description.LocationType, description.Scene,
+			description.Description, strings.Join(description.Activities, " "), strings.Join(description.Objects, " "))
+	}
+	corpus := strings.ToLower(text.String())
+	if containsAny(corpus, "outdoor", " park", " yard", "living room", "bedroom", "sofa", "couch", "bedspread", "at home") {
+		return false
+	}
+	return containsAny(corpus, "atrium", "exhibition", "exhibit", "museum", "gallery", "storefront",
+		"shopping center", "public venue", "cultural display", "decorative display", "stage", "statue", "sculpture")
+}
+
+func containsAny(value string, fragments ...string) bool {
+	for _, fragment := range fragments {
+		if strings.Contains(value, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func partitionsWithinGap(left, right []int, groups [][]Candidate, gap time.Duration) bool {
+	for _, leftIndex := range left {
+		for _, rightIndex := range right {
+			for _, leftCandidate := range groups[leftIndex] {
+				for _, rightCandidate := range groups[rightIndex] {
+					if leftCandidate.CapturedAt.Sub(rightCandidate.CapturedAt).Abs() <= gap {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func validateClusterPartition(partition [][]int, clusterCount int) error {
+	seen := make([]bool, clusterCount)
+	for _, group := range partition {
+		if len(group) == 0 {
+			return fmt.Errorf("semantic cluster merger returned an empty group")
+		}
+		for _, index := range group {
+			if index < 0 || index >= clusterCount || seen[index] {
+				return fmt.Errorf("semantic cluster merger returned invalid index %d", index)
+			}
+			seen[index] = true
+		}
+	}
+	for index, included := range seen {
+		if !included {
+			return fmt.Errorf("semantic cluster merger omitted index %d", index)
+		}
+	}
+	return nil
 }
 
 func (service *Service) enrichMoment(ctx context.Context, moment Moment, candidates []Candidate) (Metadata, error) {
@@ -345,6 +520,22 @@ func semanticCandidates(candidates []Candidate) []Candidate {
 		add(candidate)
 	}
 	return selected
+}
+
+func clusterMergeCandidates(candidates []Candidate) []Candidate {
+	representatives := make([]Candidate, 0, min(len(candidates), MaximumSemanticImages))
+	for _, candidate := range candidates {
+		if candidate.Representative {
+			representatives = append(representatives, candidate)
+			if len(representatives) == MaximumSemanticImages {
+				break
+			}
+		}
+	}
+	if len(representatives) > 0 {
+		return representatives
+	}
+	return semanticCandidates(candidates)
 }
 
 func validStatus(status string) bool {

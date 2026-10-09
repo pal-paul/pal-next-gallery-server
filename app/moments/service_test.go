@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ type testRepository struct {
 	groups       [][]Candidate
 	updated      Moment
 	descriptions []ImageDescription
+	stored       []ImageDescription
 }
 
 type testClusterer struct{ groups [][]Candidate }
@@ -37,6 +39,7 @@ func (enricher testEnricher) Enrich(context.Context, Moment, []Candidate) (Metad
 type testTwoStageEnricher struct {
 	described   []string
 	synthesized []ImageDescription
+	mergeGroups [][]int
 }
 
 func (enricher *testTwoStageEnricher) Describe(_ context.Context, candidate Candidate) (ImageDescription, error) {
@@ -47,6 +50,17 @@ func (enricher *testTwoStageEnricher) Describe(_ context.Context, candidate Cand
 func (enricher *testTwoStageEnricher) Synthesize(_ context.Context, _ Moment, descriptions []ImageDescription) (Metadata, error) {
 	enricher.synthesized = append(enricher.synthesized, descriptions...)
 	return Metadata{Title: "Synthesized title", Description: "Synthesized description", Confidence: 0.9}, nil
+}
+
+func (enricher *testTwoStageEnricher) MergeClusters(_ context.Context, clusters [][]ImageDescription) ([][]int, error) {
+	if enricher.mergeGroups != nil {
+		return enricher.mergeGroups, nil
+	}
+	groups := make([][]int, len(clusters))
+	for index := range clusters {
+		groups[index] = []int{index}
+	}
+	return groups, nil
 }
 
 func (repository *testRepository) ListMomentOwners(context.Context) ([]string, error) {
@@ -74,6 +88,9 @@ func (repository *testRepository) SetMomentCover(context.Context, string, string
 }
 func (repository *testRepository) ListMomentCandidates(context.Context, string) ([]Candidate, error) {
 	return repository.candidates, nil
+}
+func (repository *testRepository) ListImageDescriptions(context.Context, []string) ([]ImageDescription, error) {
+	return repository.stored, nil
 }
 func (repository *testRepository) SaveImageDescriptions(_ context.Context, descriptions []ImageDescription) error {
 	repository.descriptions = append(repository.descriptions, descriptions...)
@@ -206,6 +223,87 @@ func TestGenerateDescribesPersistsAndSynthesizesSelectedImages(t *testing.T) {
 	}
 	if repository.created[0].Title != "Synthesized title" || repository.created[0].Description != "Synthesized description" {
 		t.Fatalf("unexpected synthesized moment: %#v", repository.created[0])
+	}
+}
+
+func TestGenerateSemanticallyMergesFragmentedVisualClusters(t *testing.T) {
+	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
+	visualGroups := [][]Candidate{
+		{{ID: "home-1", CapturedAt: base, Representative: true}, {ID: "home-2", CapturedAt: base}, {ID: "home-3", CapturedAt: base}},
+		{{ID: "exhibit-1", CapturedAt: base, Representative: true}, {ID: "exhibit-2", CapturedAt: base}},
+		{{ID: "garden-1", CapturedAt: base, Representative: true}, {ID: "garden-2", CapturedAt: base}, {ID: "garden-3", CapturedAt: base}},
+		{{ID: "exhibit-3", CapturedAt: base, Representative: true}},
+	}
+	repository := &testRepository{candidates: append(append(append(visualGroups[0], visualGroups[1]...), visualGroups[2]...), visualGroups[3]...)}
+	enricher := &testTwoStageEnricher{mergeGroups: [][]int{{0}, {1, 3}, {2}}}
+	service := New(repository, WithClusterer(testClusterer{groups: visualGroups}),
+		WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+
+	created, err := service.generateForOwner(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 3 || len(repository.groups) != 3 {
+		t.Fatalf("unexpected generated groups: %#v", repository.groups)
+	}
+	if len(repository.groups[1]) != 3 || repository.groups[1][0].ID != "exhibit-1" || repository.groups[1][2].ID != "exhibit-3" {
+		t.Fatalf("fragmented event was not merged: %#v", repository.groups[1])
+	}
+	if len(repository.descriptions) != 4 {
+		t.Fatalf("expected each representative to be described once, got %d descriptions", len(repository.descriptions))
+	}
+}
+
+func TestGenerateReusesStoredImageDescriptions(t *testing.T) {
+	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
+	group := []Candidate{
+		{ID: "stored", CapturedAt: base, Representative: true},
+		{ID: "second", CapturedAt: base.Add(time.Minute)},
+		{ID: "third", CapturedAt: base.Add(2 * time.Minute)},
+	}
+	repository := &testRepository{
+		candidates: group,
+		stored:     []ImageDescription{{MediaID: "stored", Model: "vision", Description: "Cached description"}},
+	}
+	enricher := &testTwoStageEnricher{}
+	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{group}}),
+		WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+
+	created, err := service.generateForOwner(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 || len(enricher.described) != 0 || len(repository.descriptions) != 0 {
+		t.Fatalf("stored description was not reused: created=%d described=%v saved=%v",
+			created, enricher.described, repository.descriptions)
+	}
+	if len(enricher.synthesized) != 1 || enricher.synthesized[0].Description != "Cached description" {
+		t.Fatalf("unexpected synthesized descriptions: %#v", enricher.synthesized)
+	}
+}
+
+func TestMergeCompatiblePublicVenueGroupsPreservesEventBoundaries(t *testing.T) {
+	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
+	groups := [][]Candidate{
+		{{ID: "home", CapturedAt: base}},
+		{{ID: "statues", CapturedAt: base.Add(time.Minute)}},
+		{{ID: "garden", CapturedAt: base.Add(2 * time.Minute)}},
+		{{ID: "atrium", CapturedAt: base.Add(3 * time.Minute)}},
+		{{ID: "detail", CapturedAt: base.Add(4 * time.Minute)}},
+	}
+	descriptions := [][]ImageDescription{
+		{{LocationType: "indoor", Scene: "living room", Objects: []string{"sofa"}}},
+		{{LocationType: "indoor exhibition", Scene: "statue display"}},
+		{{LocationType: "outdoor", Scene: "garden with flowers"}},
+		{{LocationType: "indoor", Scene: "building atrium with storefronts"}},
+		{{LocationType: "indoor", Scene: "decorative display", Objects: []string{"lantern"}}},
+	}
+
+	merged := mergeCompatiblePublicVenueGroups([][]int{{0}, {1}, {2}, {3}, {4}}, groups, descriptions)
+
+	want := [][]int{{0}, {1, 3, 4}, {2}}
+	if !reflect.DeepEqual(merged, want) {
+		t.Fatalf("unexpected reconciled partition: got %#v want %#v", merged, want)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"math/bits"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"pal-next-gallery-server/app/moments"
@@ -17,13 +19,7 @@ import (
 	"gocv.io/x/gocv"
 )
 
-const similarityThreshold = 0.62
-
-type weightedEdge struct {
-	left   int
-	right  int
-	weight float64
-}
+const defaultSimilarityThreshold = 0.62
 
 type imageFeatures struct {
 	candidate moments.Candidate
@@ -138,14 +134,10 @@ func cluster(features []imageFeatures) [][]moments.Candidate {
 	if len(features) == 0 {
 		return nil
 	}
-	parent := densityComponents(features)
-	components := make(map[int][]int)
-	for index := range features {
-		root := find(parent, index)
-		components[root] = append(components[root], index)
-	}
+	components := averageLinkComponents(features, configuredSimilarityThreshold())
 	groups := make([][]moments.Candidate, 0, len(components))
 	for _, indexes := range components {
+		sort.Ints(indexes)
 		groups = append(groups, scoreRepresentatives(features, indexes))
 	}
 	sort.Slice(groups, func(left, right int) bool {
@@ -154,60 +146,50 @@ func cluster(features []imageFeatures) [][]moments.Candidate {
 	return groups
 }
 
-func densityComponents(features []imageFeatures) []int {
-	distances := make([][]float64, len(features))
-	coreDistances := make([]float64, len(features))
+func averageLinkComponents(features []imageFeatures, similarityThreshold float64) [][]int {
+	similarities := make([][]float64, len(features))
+	components := make([][]int, len(features))
 	for left := range features {
-		distances[left] = make([]float64, len(features))
-		neighbors := make([]float64, 0, len(features)-1)
-		for right := range features {
-			if left == right {
-				continue
+		similarities[left] = make([]float64, len(features))
+		components[left] = []int{left}
+		for right := 0; right < left; right++ {
+			score := similarity(features[left], features[right])
+			similarities[left][right] = score
+			similarities[right][left] = score
+		}
+	}
+	for {
+		mergeLeft, mergeRight := -1, -1
+		bestScore := similarityThreshold
+		for left := range components {
+			for right := left + 1; right < len(components); right++ {
+				var total float64
+				for _, leftIndex := range components[left] {
+					for _, rightIndex := range components[right] {
+						total += similarities[leftIndex][rightIndex]
+					}
+				}
+				score := total / float64(len(components[left])*len(components[right]))
+				if score > bestScore {
+					mergeLeft, mergeRight, bestScore = left, right, score
+				}
 			}
-			distance := 1 - similarity(features[left], features[right])
-			distances[left][right] = distance
-			neighbors = append(neighbors, distance)
 		}
-		sort.Float64s(neighbors)
-		if len(neighbors) > 0 {
-			coreDistances[left] = neighbors[min(1, len(neighbors)-1)]
+		if mergeLeft < 0 {
+			return components
 		}
+		components[mergeLeft] = append(components[mergeLeft], components[mergeRight]...)
+		components = append(components[:mergeRight], components[mergeRight+1:]...)
 	}
-	edges := make([]weightedEdge, 0, len(features)*(len(features)-1)/2)
-	for left := range features {
-		for right := left + 1; right < len(features); right++ {
-			edges = append(edges, weightedEdge{left: left, right: right,
-				weight: max(distances[left][right], max(coreDistances[left], coreDistances[right]))})
-		}
-	}
-	sort.Slice(edges, func(left, right int) bool { return edges[left].weight < edges[right].weight })
-	treeParent := newParents(len(features))
-	minimumSpanningTree := make([]weightedEdge, 0, max(0, len(features)-1))
-	for _, edge := range edges {
-		if find(treeParent, edge.left) == find(treeParent, edge.right) {
-			continue
-		}
-		join(treeParent, edge.left, edge.right)
-		minimumSpanningTree = append(minimumSpanningTree, edge)
-	}
-	parent := make([]int, len(features))
-	for index := range parent {
-		parent[index] = index
-	}
-	for _, edge := range minimumSpanningTree {
-		if edge.weight <= 1-similarityThreshold {
-			join(parent, edge.left, edge.right)
-		}
-	}
-	return parent
 }
 
-func newParents(size int) []int {
-	parents := make([]int, size)
-	for index := range parents {
-		parents[index] = index
+func configuredSimilarityThreshold() float64 {
+	configured := strings.TrimSpace(os.Getenv("ENV_MOMENTS_SIMILARITY_THRESHOLD"))
+	threshold, err := strconv.ParseFloat(configured, 64)
+	if err != nil || threshold <= 0 || threshold > 1 {
+		return defaultSimilarityThreshold
 	}
-	return parents
+	return threshold
 }
 
 func similarity(left, right imageFeatures) float64 {
@@ -238,7 +220,7 @@ func cosineSimilarity(left, right []float64) (float64, bool) {
 	if leftMagnitude == 0 || rightMagnitude == 0 {
 		return 0, false
 	}
-	return (dot/math.Sqrt(leftMagnitude*rightMagnitude) + 1) / 2, true
+	return max(0, min(1, dot/math.Sqrt(leftMagnitude*rightMagnitude))), true
 }
 
 func proximity(left, right time.Time, limit time.Duration) float64 {
@@ -347,19 +329,4 @@ func representativeTarget(groupSize int) int {
 	}
 	target := int(math.Ceil(math.Sqrt(float64(groupSize))))
 	return min(max(target, 5), min(groupSize, 15))
-}
-
-func find(parent []int, index int) int {
-	if parent[index] != index {
-		parent[index] = find(parent, parent[index])
-	}
-	return parent[index]
-}
-
-func join(parent []int, left, right int) {
-	leftRoot := find(parent, left)
-	rightRoot := find(parent, right)
-	if leftRoot != rightRoot {
-		parent[rightRoot] = leftRoot
-	}
 }

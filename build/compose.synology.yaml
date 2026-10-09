@@ -27,6 +27,31 @@ services:
         max-file: "5"
     restart: unless-stopped
 
+  embedding-api:
+    build:
+      context: ..
+      dockerfile: embedding/Dockerfile
+    environment:
+      EMBEDDING_MODEL: openai/clip-vit-base-patch32
+    volumes:
+      - type: bind
+        source: /volume1/docker/next-gallery-server/models
+        target: /models/huggingface
+        bind:
+          create_host_path: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5m
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: unless-stopped
+
   server:
     image: ghcr.io/pal-paul/pal-next-gallery-server:latest
     environment:
@@ -56,8 +81,8 @@ services:
       ENV_MOMENTS_GEMINI_API_KEY: "<change-me>"
       ENV_MOMENTS_GEMINI_MODEL: gemini-2.5-flash-lite
       ENV_MOMENTS_GEMINI_TEXT_MODEL: gemini-2.5-flash-lite
-      ENV_MOMENTS_EMBEDDING_URL: ""
-      ENV_MOMENTS_EMBEDDING_MODEL: siglip
+      ENV_MOMENTS_EMBEDDING_URL: http://embedding-api:8000/embed
+      ENV_MOMENTS_EMBEDDING_MODEL: openai/clip-vit-base-patch32
       NAS_IMPORT_PATH: /data/import
       ENV_MEDIA_DIR: /data/gallery
       ENV_TMP_DIR: /data/tmp
@@ -81,6 +106,8 @@ services:
           create_host_path: true
     depends_on:
       postgres:
+        condition: service_healthy
+      embedding-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]

@@ -92,3 +92,19 @@ func TestGeminiPipelineRequiresAPIKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestClusterMergePromptTreatsVisualClustersAsEventFragments(t *testing.T) {
+	prompt := clusterMergePrompt(`[[{"scene":"atrium"}],[{"scene":"exhibit"}],[{"scene":"lantern detail"}]]`)
+
+	for _, instruction := range []string{
+		"First partition clusters by incompatible event context",
+		"Never merge an outdoor cluster with an indoor cluster",
+		"visual clusters, not event boundaries",
+		"atrium, storefronts, cultural exhibits, statues, portraits, decorative displays, and close-up detail photos",
+		"Attach singleton decor or detail clusters",
+	} {
+		if !strings.Contains(prompt, instruction) {
+			t.Errorf("cluster merge prompt is missing %q: %s", instruction, prompt)
+		}
+	}
+}

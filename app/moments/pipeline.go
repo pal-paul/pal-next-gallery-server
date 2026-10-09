@@ -21,6 +21,10 @@ type MetadataSynthesizer interface {
 	Synthesize(context.Context, Moment, []ImageDescription) (Metadata, error)
 }
 
+type SemanticClusterMerger interface {
+	MergeClusters(context.Context, [][]ImageDescription) ([][]int, error)
+}
+
 type ImageDescription struct {
 	MediaID      string   `json:"mediaId,omitempty"`
 	Model        string   `json:"-"`

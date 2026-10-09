@@ -36,7 +36,7 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 
 The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path. Gemini enrichment is enabled when an API key is configured.
 
-The embedding provider remains a separate HTTP service and is not included in either Compose file. Leave `ENV_MOMENTS_EMBEDDING_URL` empty to use histogram similarity, or configure a compatible private endpoint to enable versioned SigLIP/CLIP vectors.
+The Compose stack includes a private CPU CLIP service. It caches model weights in a persistent volume and stores normalized image vectors in PostgreSQL during media processing.
 
 ## 3. Production Profiles
 
@@ -523,8 +523,8 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 | ----------------------------- | ------------- | ------------------------------------------------------- |
 | `ENV_MOMENTS_INTERVAL`        | `168h`        | Invalid or non-positive values stop startup             |
 | `ENV_MOMENTS_CV_WORKER`       | empty         | Uses temporal clustering                                |
-| `ENV_MOMENTS_EMBEDDING_URL`   | empty         | Skips embeddings; CV falls back to histogram similarity |
-| `ENV_MOMENTS_EMBEDDING_MODEL` | `siglip`      | Sent to the embedding provider                          |
+| `ENV_MOMENTS_EMBEDDING_URL`   | `http://embedding-api:8000/embed` | Private Compose embedding endpoint       |
+| `ENV_MOMENTS_EMBEDDING_MODEL` | `openai/clip-vit-base-patch32`    | CLIP model loaded by the endpoint         |
 | `ENV_MOMENTS_GEMINI_API_KEY`   | empty                                      | Automatic moment creation is skipped                    |
 | `ENV_MOMENTS_GEMINI_URL`       | Google Gemini API                           | Gemini API base URL                                     |
 | `ENV_MOMENTS_GEMINI_MODEL`     | `gemini-3.5-flash-lite`                     | Vision model identifier                                 |
@@ -558,7 +558,7 @@ These values are currently compile-time constants:
 
 - Verify `/app/moments-cv-worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
 - Ensure the worker can read the same media paths as the server.
-- Deploy the embedding endpoint before setting `ENV_MOMENTS_EMBEDDING_URL`.
+- Allow the embedding container to download and cache its model before the first upload.
 - Configure a restricted paid-tier Gemini API key.
 - Confirm the server can reach the Gemini API over HTTPS.
 - Run one manual generation request before relying on the weekly scheduler.
