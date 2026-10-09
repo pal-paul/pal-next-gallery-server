@@ -58,7 +58,7 @@ services:
       - ../.env
     environment:
       ENV_AI_FEATURE: ${ENV_AI_FEATURE:-NO}
-      ENV_MOMENTS_CV_WORKER: /app/moments-cv-worker
+      ENV_MOMENTS_CV_WORKER: /app/worker
       ENV_MOMENTS_GEMINI_URL: ${ENV_MOMENTS_GEMINI_URL:-https://generativelanguage.googleapis.com/v1beta}
       ENV_MOMENTS_GEMINI_API_KEY: ${ENV_MOMENTS_GEMINI_API_KEY:-}
       ENV_MOMENTS_GEMINI_MODEL: ${ENV_MOMENTS_GEMINI_MODEL:-gemini-2.5-flash-lite}

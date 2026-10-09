@@ -25,7 +25,7 @@ COPY app ./app
 COPY cmd ./cmd
 
 RUN CGO_ENABLED=0 GOOS=linux GOMAXPROCS=1 go build -p=1 -trimpath -ldflags="-s -w" -o /out/pal-media-server ./cmd/server
-RUN CGO_ENABLED=1 GOOS=linux GOMAXPROCS=1 go build -p=1 -tags opencv -trimpath -ldflags="-s -w" -o /out/moments-cv-worker ./cmd/moments-cv-worker
+RUN CGO_ENABLED=1 GOOS=linux GOMAXPROCS=1 go build -p=1 -tags opencv -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
 
 FROM ${RUNTIME_IMAGE}
 
@@ -43,7 +43,7 @@ USER uploader
 WORKDIR /app
 
 COPY --from=builder /out/pal-media-server /app/pal-media-server
-COPY --from=builder /out/moments-cv-worker /app/moments-cv-worker
+COPY --from=builder /out/worker /app/worker
 COPY --from=web-builder /src/web/dist /app/web/dist
 
 EXPOSE ${ENV_PORT}

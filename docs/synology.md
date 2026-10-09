@@ -135,7 +135,7 @@ processing runs before imported media becomes eligible for automatic albums,
 which group media by capture date when that metadata is available.
 
 Images are published for `linux/amd64` and `linux/arm64`. The application image
-includes FFmpeg, OpenCV, and `/app/moments-cv-worker`, and runs as a non-root
+includes FFmpeg, OpenCV, and `/app/worker`, and runs as a non-root
 user.
 
 ## Moments

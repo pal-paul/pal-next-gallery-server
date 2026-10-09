@@ -43,7 +43,7 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 
 ### Important deployment reality
 
-The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path. The full AI path also requires `ENV_AI_FEATURE` to be enabled and a Gemini API key to be configured.
+The production image builds the OpenCV worker with CGO and exposes it at `/app/worker`. Both Compose files configure that path. The full AI path also requires `ENV_AI_FEATURE` to be enabled and a Gemini API key to be configured.
 
 The Compose stack includes a private CPU CLIP service. It caches model weights in a persistent volume and stores normalized image vectors in PostgreSQL during media processing.
 
@@ -605,7 +605,7 @@ These values are currently compile-time constants:
 
 ### Full intelligence profile
 
-- Verify `/app/moments-cv-worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
+- Verify `/app/worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
 - Ensure the worker can read the same media paths as the server.
 - Allow the embedding container to download and cache its model before the first upload.
 - Configure a restricted paid-tier Gemini API key.
@@ -745,7 +745,7 @@ Repository validation commands:
 
 ```bash
 go test ./...
-go test -tags opencv ./app/processing ./app/db ./app/moments ./cmd/moments-cv-worker ./cmd/server
+go test -tags opencv ./app/processing ./app/db ./app/moments ./cmd/worker ./cmd/server
 ```
 
 ## 20. Roadmap
