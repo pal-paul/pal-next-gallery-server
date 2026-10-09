@@ -254,6 +254,26 @@ func TestGenerateSemanticallyMergesFragmentedVisualClusters(t *testing.T) {
 	}
 }
 
+func TestGenerateFallsBackFromInvalidSemanticPartition(t *testing.T) {
+	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
+	visualGroups := [][]Candidate{
+		{{ID: "first-1", CapturedAt: base, Representative: true}, {ID: "first-2", CapturedAt: base}, {ID: "first-3", CapturedAt: base}},
+		{{ID: "second-1", CapturedAt: base, Representative: true}, {ID: "second-2", CapturedAt: base}, {ID: "second-3", CapturedAt: base}},
+	}
+	repository := &testRepository{candidates: append(visualGroups[0], visualGroups[1]...)}
+	enricher := &testTwoStageEnricher{mergeGroups: [][]int{{0}, {2}}}
+	service := New(repository, WithClusterer(testClusterer{groups: visualGroups}),
+		WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+
+	created, err := service.generateForOwner(context.Background(), "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 2 || len(repository.groups) != 2 {
+		t.Fatalf("invalid semantic partition did not fall back to visual groups: %#v", repository.groups)
+	}
+}
+
 func TestGenerateReusesStoredImageDescriptions(t *testing.T) {
 	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
 	group := []Candidate{
@@ -293,17 +313,39 @@ func TestMergeCompatiblePublicVenueGroupsPreservesEventBoundaries(t *testing.T) 
 	}
 	descriptions := [][]ImageDescription{
 		{{LocationType: "indoor", Scene: "living room", Objects: []string{"sofa"}}},
-		{{LocationType: "indoor exhibition", Scene: "statue display"}},
+		{{LocationType: "indoor exhibition", Scene: "statue display with a red decorative background and hanging rings"}},
 		{{LocationType: "outdoor", Scene: "garden with flowers"}},
 		{{LocationType: "indoor", Scene: "building atrium with storefronts"}},
-		{{LocationType: "indoor", Scene: "decorative display", Objects: []string{"lantern"}}},
+		{{LocationType: "indoor", Scene: "red background with hanging lantern", Objects: []string{"lantern", "circular decorations"}}},
 	}
 
-	merged := mergeCompatiblePublicVenueGroups([][]int{{0}, {1}, {2}, {3}, {4}}, groups, descriptions)
+	merged := mergeCompatibleEventContextGroups([][]int{{0}, {1}, {2}, {3}, {4}}, groups, descriptions)
 
 	want := [][]int{{0}, {1, 3, 4}, {2}}
 	if !reflect.DeepEqual(merged, want) {
 		t.Fatalf("unexpected reconciled partition: got %#v want %#v", merged, want)
+	}
+}
+
+func TestClassifyEventContextPreservesUnknown(t *testing.T) {
+	tests := []struct {
+		name        string
+		description ImageDescription
+		want        eventContext
+	}{
+		{name: "public attraction outdoors", description: ImageDescription{LocationType: "outdoor zoo"}, want: contextPublicVenue},
+		{name: "outdoor activity", description: ImageDescription{Scene: "family picnic in a park"}, want: contextOutdoorActivity},
+		{name: "private birthday", description: ImageDescription{Scene: "birthday party in our home living room"}, want: contextHomeOrPrivate},
+		{name: "event", description: ImageDescription{Scene: "school graduation ceremony"}, want: contextEventCelebration},
+		{name: "travel", description: ImageDescription{LocationType: "airport terminal"}, want: contextTravel},
+		{name: "unknown detail", description: ImageDescription{Scene: "red background with hanging lantern"}, want: contextUnknown},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyEventContext([]ImageDescription{test.description}); got != test.want {
+				t.Fatalf("classifyEventContext() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

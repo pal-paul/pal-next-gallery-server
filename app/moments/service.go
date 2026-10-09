@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -308,9 +309,10 @@ func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Ca
 		return nil, err
 	}
 	if err := validateClusterPartition(mergedIndexes, len(groups)); err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "ignoring invalid semantic cluster partition", "error", err)
+		mergedIndexes = identityClusterPartition(len(groups))
 	}
-	mergedIndexes = mergeCompatiblePublicVenueGroups(mergedIndexes, groups, descriptionsByGroup)
+	mergedIndexes = mergeCompatibleEventContextGroups(mergedIndexes, groups, descriptionsByGroup)
 	prepared := make([]semanticGroup, 0, len(mergedIndexes))
 	for _, indexes := range mergedIndexes {
 		var merged semanticGroup
@@ -323,18 +325,38 @@ func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Ca
 	return prepared, nil
 }
 
-func mergeCompatiblePublicVenueGroups(partition [][]int, groups [][]Candidate, descriptions [][]ImageDescription) [][]int {
+func identityClusterPartition(clusterCount int) [][]int {
+	partition := make([][]int, clusterCount)
+	for index := range partition {
+		partition[index] = []int{index}
+	}
+	return partition
+}
+
+type eventContext string
+
+const (
+	contextPublicVenue      eventContext = "public_venue"
+	contextOutdoorActivity  eventContext = "outdoor_activity"
+	contextHomeOrPrivate    eventContext = "home_or_private"
+	contextEventCelebration eventContext = "event_or_celebration"
+	contextTravel           eventContext = "travel"
+	contextUnknown          eventContext = "unknown"
+)
+
+func mergeCompatibleEventContextGroups(partition [][]int, groups [][]Candidate, descriptions [][]ImageDescription) [][]int {
 	merged := make([][]int, len(partition))
 	for index := range partition {
 		merged[index] = append([]int(nil), partition[index]...)
 	}
 	for left := 0; left < len(merged); left++ {
-		if !isPublicVenuePartition(merged[left], descriptions) {
+		leftContext := partitionEventContext(merged[left], descriptions)
+		if leftContext == contextUnknown {
 			continue
 		}
 		for right := left + 1; right < len(merged); {
-			if isPublicVenuePartition(merged[right], descriptions) &&
-				partitionsWithinGap(merged[left], merged[right], groups, SessionGap) {
+			if partitionEventContext(merged[right], descriptions) == leftContext &&
+				partitionsCompatible(merged[left], merged[right], groups) {
 				merged[left] = append(merged[left], merged[right]...)
 				merged = append(merged[:right], merged[right+1:]...)
 				continue
@@ -342,30 +364,92 @@ func mergeCompatiblePublicVenueGroups(partition [][]int, groups [][]Candidate, d
 			right++
 		}
 	}
+	for unknown := 0; unknown < len(merged); {
+		if partitionEventContext(merged[unknown], descriptions) != contextUnknown {
+			unknown++
+			continue
+		}
+		match := -1
+		bestAffinity := 0
+		for known := range merged {
+			if known == unknown || partitionEventContext(merged[known], descriptions) == contextUnknown ||
+				!partitionsCompatible(merged[unknown], merged[known], groups) ||
+				partitionEnvironment(merged[unknown], descriptions) != partitionEnvironment(merged[known], descriptions) {
+				continue
+			}
+			affinity := partitionSemanticAffinity(merged[unknown], merged[known], descriptions)
+			if affinity > bestAffinity {
+				match, bestAffinity = known, affinity
+			}
+		}
+		if match < 0 || bestAffinity < 2 {
+			unknown++
+			continue
+		}
+		merged[match] = append(merged[match], merged[unknown]...)
+		merged = append(merged[:unknown], merged[unknown+1:]...)
+	}
 	return merged
 }
 
-func isPublicVenuePartition(indexes []int, descriptions [][]ImageDescription) bool {
+func partitionEventContext(indexes []int, descriptions [][]ImageDescription) eventContext {
+	context := contextUnknown
 	for _, index := range indexes {
-		if index < 0 || index >= len(descriptions) || !isPublicVenueCluster(descriptions[index]) {
-			return false
+		if index < 0 || index >= len(descriptions) {
+			return contextUnknown
 		}
+		classified := classifyEventContext(descriptions[index])
+		if classified == contextUnknown {
+			continue
+		}
+		if context != contextUnknown && context != classified {
+			return contextUnknown
+		}
+		context = classified
 	}
-	return len(indexes) > 0
+	return context
 }
 
-func isPublicVenueCluster(descriptions []ImageDescription) bool {
+func classifyEventContext(descriptions []ImageDescription) eventContext {
 	var text strings.Builder
 	for _, description := range descriptions {
 		fmt.Fprintf(&text, " %s %s %s %s %s", description.LocationType, description.Scene,
 			description.Description, strings.Join(description.Activities, " "), strings.Join(description.Objects, " "))
 	}
 	corpus := strings.ToLower(text.String())
-	if containsAny(corpus, "outdoor", " park", " yard", "living room", "bedroom", "sofa", "couch", "bedspread", "at home") {
-		return false
+	privateTerms := []string{"living room", "bedroom", "my kitchen", "at home", "in our home", "home interior",
+		"on the sofa", "on the couch", "on the bed", "private garden", "backyard", "family living room", "bedspread"}
+	if containsAny(corpus, privateTerms...) {
+		return contextHomeOrPrivate
 	}
-	return containsAny(corpus, "atrium", "exhibition", "exhibit", "museum", "gallery", "storefront",
-		"shopping center", "public venue", "cultural display", "decorative display", "stage", "statue", "sculpture")
+	eventTerms := []string{"wedding", "concert", "festival", "fairground", "conference", "school event",
+		"graduation", "birthday party", "celebration", "ceremony", "auditorium", "event venue"}
+	if containsAny(corpus, eventTerms...) {
+		return contextEventCelebration
+	}
+	travelTerms := []string{"airport terminal", "train station", "ferry terminal", "hotel lobby", "hotel reception",
+		"vacation", "sightseeing", "tourist", "resort", "cruise", "observation deck", "viewpoint"}
+	if containsAny(corpus, travelTerms...) {
+		return contextTravel
+	}
+	publicVenueTerms := []string{
+		"museum", "art gallery", "exhibition hall", "exhibition", "art installation", "cultural center", "cultural centre",
+		"theatre", "theater", "opera house", "shopping mall", "shopping centre", "shopping center", "department store",
+		"supermarket", "market hall", "boutique", "outlet store", "food court", "restaurant", "cafe", "coffee shop",
+		"bakery", "ice cream shop", "zoo", "aquarium", "theme park", "amusement park", "botanical garden",
+		"planetarium", "castle", "palace", "historic site", "landmark", "monument", "city square", "public plaza",
+		"fountain square", "concert hall", "convention center", "convention centre", "sports arena", "stadium",
+		"bowling alley", "golf course", "public swimming pool", "public library", "university campus", "science center",
+		"science centre", "public market", "atrium", "storefront", "cultural display", "decorative display", "statue", "sculpture",
+	}
+	if containsAny(corpus, publicVenueTerms...) {
+		return contextPublicVenue
+	}
+	outdoorTerms := []string{"outdoor", " park", "beach", "hiking", "picnic", "garden", "trail", "forest", "mountain", "lake"}
+	if containsAny(corpus, outdoorTerms...) {
+		return contextOutdoorActivity
+	}
+	return contextUnknown
 }
 
 func containsAny(value string, fragments ...string) bool {
@@ -375,6 +459,91 @@ func containsAny(value string, fragments ...string) bool {
 		}
 	}
 	return false
+}
+
+func partitionEnvironment(indexes []int, descriptions [][]ImageDescription) string {
+	var corpus strings.Builder
+	for _, index := range indexes {
+		for _, description := range descriptions[index] {
+			fmt.Fprintf(&corpus, " %s %s %s", description.LocationType, description.Scene, description.Description)
+		}
+	}
+	value := strings.ToLower(corpus.String())
+	if containsAny(value, "outdoor", "beach", " park", "garden", "forest", "mountain", "lake") {
+		return "outdoor"
+	}
+	if containsAny(value, "indoor", "interior", "inside") {
+		return "indoor"
+	}
+	return "unknown"
+}
+
+func partitionSemanticAffinity(left, right []int, descriptions [][]ImageDescription) int {
+	leftTerms := partitionSemanticTerms(left, descriptions)
+	rightTerms := partitionSemanticTerms(right, descriptions)
+	shared := 0
+	for term := range leftTerms {
+		if _, exists := rightTerms[term]; exists {
+			shared++
+		}
+	}
+	return shared
+}
+
+func partitionSemanticTerms(indexes []int, descriptions [][]ImageDescription) map[string]struct{} {
+	terms := make(map[string]struct{})
+	for _, index := range indexes {
+		for _, description := range descriptions[index] {
+			value := strings.ToLower(description.Scene + " " + description.Description + " " + strings.Join(description.Objects, " "))
+			for _, term := range strings.FieldsFunc(value, func(character rune) bool { return character < 'a' || character > 'z' }) {
+				if len(term) < 4 || containsAny(term, "indoor", "photo", "person", "people", "shows", "visible") {
+					continue
+				}
+				if strings.HasPrefix(term, "decorat") {
+					term = "decorat"
+				}
+				terms[term] = struct{}{}
+			}
+		}
+	}
+	return terms
+}
+
+func partitionsCompatible(left, right []int, groups [][]Candidate) bool {
+	return partitionsWithinGap(left, right, groups, SessionGap) && partitionsLocationCompatible(left, right, groups)
+}
+
+func partitionsLocationCompatible(left, right []int, groups [][]Candidate) bool {
+	foundLocations := false
+	for _, leftIndex := range left {
+		for _, rightIndex := range right {
+			for _, leftCandidate := range groups[leftIndex] {
+				for _, rightCandidate := range groups[rightIndex] {
+					if leftCandidate.Latitude == nil || leftCandidate.Longitude == nil ||
+						rightCandidate.Latitude == nil || rightCandidate.Longitude == nil {
+						continue
+					}
+					foundLocations = true
+					if coordinateDistanceKM(*leftCandidate.Latitude, *leftCandidate.Longitude,
+						*rightCandidate.Latitude, *rightCandidate.Longitude) <= 50 {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return !foundLocations
+}
+
+func coordinateDistanceKM(latitude1, longitude1, latitude2, longitude2 float64) float64 {
+	const earthRadiusKM = 6371.0
+	latitudeDelta := (latitude2 - latitude1) * math.Pi / 180
+	longitudeDelta := (longitude2 - longitude1) * math.Pi / 180
+	leftLatitude := latitude1 * math.Pi / 180
+	rightLatitude := latitude2 * math.Pi / 180
+	a := math.Sin(latitudeDelta/2)*math.Sin(latitudeDelta/2) +
+		math.Cos(leftLatitude)*math.Cos(rightLatitude)*math.Sin(longitudeDelta/2)*math.Sin(longitudeDelta/2)
+	return earthRadiusKM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
 func partitionsWithinGap(left, right []int, groups [][]Candidate, gap time.Duration) bool {
