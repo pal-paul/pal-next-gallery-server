@@ -16,6 +16,8 @@ FROM ${GO_IMAGE} AS builder
 
 WORKDIR /src
 
+RUN apk add --no-cache build-base pkgconf opencv-dev
+
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -23,14 +25,15 @@ COPY app ./app
 COPY cmd ./cmd
 
 RUN CGO_ENABLED=0 GOOS=linux GOMAXPROCS=1 go build -p=1 -trimpath -ldflags="-s -w" -o /out/pal-media-server ./cmd/server
+RUN CGO_ENABLED=1 GOOS=linux GOMAXPROCS=1 go build -p=1 -tags opencv -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
 
 FROM ${RUNTIME_IMAGE}
 
-ARG ENV_MEDIA_DIR
-ARG ENV_TMP_DIR
-ARG ENV_PORT
+ARG ENV_MEDIA_DIR=/data/gallery
+ARG ENV_TMP_DIR=/data/tmp
+ARG ENV_PORT=8081
 
-RUN apk add --no-cache ca-certificates ffmpeg tzdata \
+RUN apk add --no-cache ca-certificates ffmpeg libopencv_aruco libopencv_photo libopencv_video opencv tzdata \
     && addgroup -S uploader \
     && adduser -S -G uploader uploader \
     && mkdir -p "${ENV_TMP_DIR}" "${ENV_MEDIA_DIR}" \
@@ -40,6 +43,7 @@ USER uploader
 WORKDIR /app
 
 COPY --from=builder /out/pal-media-server /app/pal-media-server
+COPY --from=builder /out/worker /app/worker
 COPY --from=web-builder /src/web/dist /app/web/dist
 
 EXPOSE ${ENV_PORT}

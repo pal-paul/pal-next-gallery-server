@@ -16,6 +16,7 @@ need to match Go package names.
 | `uploader`    | Resumable upload sessions, chunks, completion, and cancellation.               |
 | `autoalbum`   | Nightly weekly and high-volume daily album reconciliation.                     |
 | `gallery`     | Albums, accessible media, personal favorites, trash, and storage totals.       |
+| `moments`     | Time-session photo grouping, lifecycle, membership, and covers.                |
 | `processing`  | Durable FFmpeg jobs, thumbnails, dimensions, duration, EXIF, and GPS metadata. |
 | `publicshare` | Expiring, optionally password-protected public media and album links.          |
 | `batch`       | Durable multi-file upload progress and cancellation.                           |
@@ -44,6 +45,9 @@ it does not implement file transfer again.
 - Albums belong to one user. A user may add owned media or media available
   through a library share. If a library share is removed, all media from that
   owner is no longer returned in the recipient's albums.
+- Moments belong to one user and are stored separately from albums. Generation
+  considers processed, active photos accessible to that user and never deletes
+  or modifies source media.
 - Public album links may contain only media owned by the link creator. Shared
   media can remain in private albums but is never exposed through those links.
 - Favorite state belongs to `(user, media)`, so users do not overwrite each
@@ -66,19 +70,19 @@ media and incomplete uploads use separate bind mounts.
 1. Install **Container Manager** from DSM Package Center and enable SSH
    temporarily in **Control Panel > Terminal & SNMP**.
 2. Copy `build/compose.synology.yaml` onto the NAS, open an SSH session, and
-  change to its parent repository directory.
+   change to its parent repository directory.
 3. Create the persistent directories:
 
 ```sh
-mkdir -p /volume1/docker/next-gallery-server/{postgres,backups} \
-  /volume1/media/{gallery,tmp}
+mkdir -p /volume1/docker/next-gallery-server/{postgres,backups,models} \
+  /volume1/media/{gallery,import,tmp}
 ```
 
 1. Replace every `<change-me>` in `build/compose.synology.yaml`. Keep the
-  PostgreSQL credentials in `ENV_DATABASE_URL` identical to the `postgres`
-  service values. The bootstrap administrator password must be at least 12
-  characters. Set `ENV_CORS_ALLOWED_ORIGINS` to the external HTTPS origin if
-  DSM reverse proxy will be used.
+   PostgreSQL credentials in `ENV_DATABASE_URL` identical to the `postgres`
+   service values. The bootstrap administrator password must be at least 12
+   characters. Set `ENV_CORS_ALLOWED_ORIGINS` to the external HTTPS origin if
+   DSM reverse proxy will be used.
 
 1. Pull and start the Container Manager project:
 
@@ -95,9 +99,9 @@ curl -fsS http://127.0.0.1:8013/readyz
 ```
 
 1. Open `http://NAS-IP:8013/setup`, enter the bootstrap credentials from
-  `build/compose.synology.yaml`, and create the permanent administrator.
-  Enroll its TOTP token on first login. Then use `/admin/config` to create
-  regular users.
+   `build/compose.synology.yaml`, and create the permanent administrator.
+   Enroll its TOTP token on first login. Then use `/admin/config` to create
+   regular users.
 
 The application container runs as a non-root user. Ensure the Container
 Manager project has read/write permission to the three bind-mounted folders if
@@ -160,6 +164,7 @@ the gallery production build.
 | `GET`   | `/healthz`                          | Public               | Report process liveness.                                      |
 | `GET`   | `/readyz`                           | Public               | Check PostgreSQL and filesystem reserve.                      |
 | `GET`   | `/admin/operations/integrity`       | Admin                | Compare media records and filesystem files.                   |
+| `GET`   | `/features`                         | Authenticated        | Report whether AI-backed features are available.              |
 
 ## Client API flows
 
@@ -302,17 +307,18 @@ recipient rather than its owner.
 
 ### Albums
 
-| Method   | Path                           | Purpose                                   |
-| -------- | ------------------------------ | ----------------------------------------- |
-| `GET`    | `/albums`                      | List the current user's albums.           |
-| `POST`   | `/albums`                      | Create an album.                          |
-| `PATCH`  | `/albums/order`                | Set album display order.                  |
-| `GET`    | `/albums/{albumId}`            | Get an album and accessible active media. |
-| `PATCH`  | `/albums/{albumId}`            | Update title and description.             |
-| `DELETE` | `/albums/{albumId}`            | Delete the album, not its media.          |
-| `POST`   | `/albums/{albumId}/media`      | Add owned or shared media.                |
-| `DELETE` | `/albums/{albumId}/media/{id}` | Remove media from the album.              |
-| `PATCH`  | `/albums/{albumId}/cover`      | Set an accessible album member as cover.  |
+| Method   | Path                                    | Purpose                                                  |
+| -------- | --------------------------------------- | -------------------------------------------------------- |
+| `GET`    | `/albums`                               | List the current user's albums.                          |
+| `POST`   | `/albums`                               | Create an album.                                         |
+| `PATCH`  | `/albums/order`                         | Set album display order.                                 |
+| `GET`    | `/albums/{albumId}`                     | Get an album and accessible active media.                |
+| `PATCH`  | `/albums/{albumId}`                     | Update title and description.                            |
+| `DELETE` | `/albums/{albumId}`                     | Delete the album, not its media.                         |
+| `POST`   | `/albums/{albumId}/media`               | Add owned or shared media.                               |
+| `DELETE` | `/albums/{albumId}/media/{id}`          | Remove media from the album.                             |
+| `PATCH`  | `/albums/{albumId}/cover`               | Set an accessible album member as cover.                 |
+| `POST`   | `/albums/{albumId}/metadata-suggestion` | Suggest editable metadata from up to six sampled photos. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -331,7 +337,67 @@ unassigned uploads on that date go directly to the daily album.
 Responses mark these albums with `"automatic": true`. Their title, order,
 membership, and lifecycle are system-managed, so the manual update, delete,
 reorder, add, and remove operations return `404` for them. Users may still
-select an album cover.
+select an album cover. Manual Albums can be edited after creation, and the web
+application exposes a direct multi-image picker from the Album detail view.
+Adding or removing Album media never calls Gemini.
+
+### Moments
+
+<!-- markdownlint-disable MD013 MD060 -->
+
+| Method   | Path                                      | Purpose                                                  |
+| -------- | ----------------------------------------- | -------------------------------------------------------- |
+| `GET`    | `/moments`                                | List the current user's moments.                         |
+| `POST`   | `/moments`                                | Create a user-edited manual draft.                       |
+| `POST`   | `/moments/generate`                       | Group currently unassigned processed photos.             |
+| `GET`    | `/moments/{momentId}`                     | Get a moment and its photos.                             |
+| `PATCH`  | `/moments/{momentId}`                     | Edit metadata and lifecycle.                             |
+| `DELETE` | `/moments/{momentId}`                     | Delete the moment, not its photos.                       |
+| `POST`   | `/moments/{momentId}/metadata-suggestion` | Suggest editable metadata from up to six sampled photos. |
+| `POST`   | `/moments/{momentId}/media`               | Add accessible photos.                                   |
+| `DELETE` | `/moments/{momentId}/media/{mediaId}`     | Remove a photo, retaining at least one.                  |
+| `PATCH`  | `/moments/{momentId}/cover`               | Select a member as the cover.                            |
+
+<!-- markdownlint-enable MD013 MD060 -->
+
+Initial generation considers successfully processed photos captured within the
+previous seven days, falling back to upload time. The OpenCV worker combines
+capture time, CLIP similarity, perceptual hashes, and GPS; time-only grouping
+with a 30-minute gap is the fallback. Gemini describes selected visual
+representatives only when they have no cached description, semantically
+reconciles visual clusters, and generates title, description, and confidence.
+Groups must contain at least three photos and become drafts only when confidence
+is at least `0.65` and the description is non-empty.
+
+Semantic reconciliation uses `location_type`, visual evidence, capture time,
+and GPS. Its deterministic context pass distinguishes `public_venue`,
+`outdoor_activity`, `home_or_private`, `event_or_celebration`, `travel`, and
+`unknown`; unknown evidence is preserved rather than forced into a venue type.
+
+Manual Moments require at least one photo and always start as user-edited
+drafts. Drafts can be edited, have photos added or removed, and be published by
+setting `status` to `published`. Declining a draft uses the normal delete route:
+only the Moment and membership rows are removed, so its photos are eligible for
+future generation. Deleting any Moment never deletes source media. Already
+assigned photos are skipped on later runs, and the database prevents a photo
+from belonging to multiple Moments for the same owner.
+
+Background generation runs every 168 hours by default. Set
+`ENV_MOMENTS_INTERVAL` to another positive Go duration such as `24h` or `336h`.
+Set `ENV_AI_FEATURE=NO` to disable CLIP embeddings, Gemini providers, scheduled
+and manual AI generation, and AI metadata suggestions. Uploads, manual Moments,
+and Album management continue to work. With AI enabled, a Gemini API key is
+still required for generation and suggestions. Go defaults the vision and text
+models to `gemini-3.5-flash-lite`; the supplied Compose files currently select
+`gemini-2.5-flash-lite`. Operators can override both with
+`ENV_MOMENTS_GEMINI_MODEL` and `ENV_MOMENTS_GEMINI_TEXT_MODEL`.
+
+Gemini is not called when a photo is uploaded or merely added to a Moment or
+Album. Upload processing sends the thumbnail to the private CLIP service once
+to persist an embedding. A user-triggered metadata suggestion randomly samples
+at most six member photos, reuses stored image descriptions, calls Gemini Vision
+only for cache misses, then makes one Gemini Text request. The response is a
+suggestion; it does not update the collection until the user saves it.
 
 Create or update an album:
 

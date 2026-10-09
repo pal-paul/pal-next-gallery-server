@@ -1,4 +1,4 @@
-import { ArrowLeft, Pencil } from 'lucide-react'
+import { ArrowLeft, Pencil, Plus } from 'lucide-react'
 import type { Album, LibraryView } from '../types/gallery'
 import { formatDate } from '../utils/date'
 
@@ -10,9 +10,10 @@ type Props = {
   favoriteCount: number
   onBack: () => void
   onEdit: () => void
+	onAddImages: () => void
 }
 
-export function PageHeading({ view, album, albumCount, mediaCount, favoriteCount, onBack, onEdit }: Props) {
+export function PageHeading({ view, album, albumCount, mediaCount, favoriteCount, onBack, onEdit, onAddImages }: Props) {
   const summary = album
     ? `${album.mediaIds.length} memories · Created ${formatDate(album.createdAt)}`
     : view === 'albums' ? `${albumCount} albums · ${mediaCount} memories`
@@ -36,7 +37,7 @@ export function PageHeading({ view, album, albumCount, mediaCount, favoriteCount
         {album?.description && <p className="album-description">{album.description}</p>}
         <div className="page-summary-row">
           <p className="page-summary">{summary}</p>
-          {album && <button className="edit-album-button" onClick={onEdit} aria-label="Edit album" title="Edit album"><Pencil size={14} /></button>}
+      {album && !album.automatic && <div className="album-heading-actions"><button className="edit-album-button" onClick={onAddImages} aria-label="Add images" title="Add images"><Plus size={15} /></button><button className="edit-album-button" onClick={onEdit} aria-label="Edit album" title="Edit album"><Pencil size={14} /></button></div>}
         </div>
       </div>
     </section>

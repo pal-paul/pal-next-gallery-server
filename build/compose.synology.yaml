@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: "<change-me>"
       POSTGRES_PASSWORD: "<change-me>"
     ports:
-      - "5510:5432"
+      - "127.0.0.1:5510:5432"
     volumes:
       - type: bind
         source: /volume1/docker/next-gallery-server/postgres
@@ -27,8 +27,32 @@ services:
         max-file: "5"
     restart: unless-stopped
 
+  embedding-api:
+    profiles: ["ai"]
+    image: ghcr.io/pal-paul/pal-next-gallery-server-embedding:latest
+    environment:
+      EMBEDDING_MODEL: openai/clip-vit-base-patch32
+    volumes:
+      - type: bind
+        source: /volume1/docker/next-gallery-server/models
+        target: /models/huggingface
+        bind:
+          create_host_path: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5m
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: unless-stopped
+
   server:
-    image: ghcr.io/pal-paul/pal-next-gallery-server:1.1.0
+    image: ghcr.io/pal-paul/pal-next-gallery-server:latest
     environment:
       ENV_GIN_MODE: release
       ENV_PORT: "8081"
@@ -50,6 +74,15 @@ services:
       ENV_ISSUER: "<change-me>"
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
+      ENV_AI_FEATURE: "NO"
+      ENV_MOMENTS_INTERVAL: 168h
+      ENV_MOMENTS_CV_WORKER: /app/worker
+      ENV_MOMENTS_GEMINI_URL: https://generativelanguage.googleapis.com/v1beta
+      ENV_MOMENTS_GEMINI_API_KEY: "<change-me>"
+      ENV_MOMENTS_GEMINI_MODEL: gemini-2.5-flash-lite
+      ENV_MOMENTS_GEMINI_TEXT_MODEL: gemini-2.5-flash-lite
+      ENV_MOMENTS_EMBEDDING_URL: http://embedding-api:8000/embed
+      ENV_MOMENTS_EMBEDDING_MODEL: openai/clip-vit-base-patch32
       NAS_IMPORT_PATH: /data/import
       ENV_MEDIA_DIR: /data/gallery
       ENV_TMP_DIR: /data/tmp
@@ -74,6 +107,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      embedding-api:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]
       interval: 30s

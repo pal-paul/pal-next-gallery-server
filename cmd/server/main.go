@@ -19,6 +19,7 @@ import (
 	store "pal-next-gallery-server/app/db"
 	"pal-next-gallery-server/app/frontend"
 	"pal-next-gallery-server/app/gallery"
+	"pal-next-gallery-server/app/moments"
 	"pal-next-gallery-server/app/nasimport"
 	"pal-next-gallery-server/app/operations"
 	"pal-next-gallery-server/app/processing"
@@ -42,27 +43,36 @@ type Environment struct {
 	Mode string `env:"ENV_GIN_MODE,default=release"`
 	Port string `env:"ENV_PORT,default=8081"`
 
-	DatabaseURL     string `env:"ENV_DATABASE_URL"`
-	AdminUsername   string `env:"ENV_ADMIN_USERNAME"`
-	AdminPassword   string `env:"ENV_ADMIN_PASSWORD"`
-	AdminConfig     string `env:"ENV_ADMIN_CONFIG,default=YES"`
-	WebDir          string `env:"ENV_WEB_DIR,default=./web/dist"`
-	MediaDir        string `env:"ENV_MEDIA_DIR,default=./vol/medias"`
-	TmpDir          string `env:"ENV_TMP_DIR,default=./vol/tmp"`
-	MaxUploadSize   int64  `env:"ENV_MAX_UPLOAD_SIZE_BYTES,default=107374182400"`
-	MaxPendingSize  int64  `env:"ENV_MAX_PENDING_UPLOAD_BYTES_PER_USER,default=107374182400"`
-	MaxStorageSize  int64  `env:"ENV_MAX_STORAGE_BYTES_PER_USER,default=1099511627776"`
-	MinDiskFree     int64  `env:"ENV_MIN_DISK_FREE_BYTES,default=2147483648"`
-	MaxActive       int    `env:"ENV_MAX_ACTIVE_UPLOADS_PER_USER,default=10"`
-	HTTPReadTimeout string `env:"ENV_HTTP_READ_TIMEOUT,default=5m"`
-	CleanupInterval string `env:"ENV_CLEANUP_INTERVAL,default=1h"`
-	UploadRetention string `env:"ENV_UPLOAD_RETENTION,default=168h"`
-	AllowedOrigins  string `env:"ENV_CORS_ALLOWED_ORIGINS,default=http://localhost:3000"`
-	TrustedProxies  string `env:"ENV_TRUSTED_PROXIES"`
-	Issuer          string `env:"ENV_ISSUER,default=issuer.palpaul.com"`
-	AutoAlbumRunAt  string `env:"ENV_AUTO_ALBUM_RUN_AT,default=02:00"`
-	AutoAlbumZone   string `env:"ENV_AUTO_ALBUM_TIMEZONE,default=Local"`
-	NASImportPath   string `env:"NAS_IMPORT_PATH"`
+	DatabaseURL            string `env:"ENV_DATABASE_URL"`
+	AdminUsername          string `env:"ENV_ADMIN_USERNAME"`
+	AdminPassword          string `env:"ENV_ADMIN_PASSWORD"`
+	AdminConfig            string `env:"ENV_ADMIN_CONFIG,default=YES"`
+	AIFeature              string `env:"ENV_AI_FEATURE,default=YES"`
+	WebDir                 string `env:"ENV_WEB_DIR,default=./web/dist"`
+	MediaDir               string `env:"ENV_MEDIA_DIR,default=./vol/medias"`
+	TmpDir                 string `env:"ENV_TMP_DIR,default=./vol/tmp"`
+	MaxUploadSize          int64  `env:"ENV_MAX_UPLOAD_SIZE_BYTES,default=107374182400"`
+	MaxPendingSize         int64  `env:"ENV_MAX_PENDING_UPLOAD_BYTES_PER_USER,default=107374182400"`
+	MaxStorageSize         int64  `env:"ENV_MAX_STORAGE_BYTES_PER_USER,default=1099511627776"`
+	MinDiskFree            int64  `env:"ENV_MIN_DISK_FREE_BYTES,default=2147483648"`
+	MaxActive              int    `env:"ENV_MAX_ACTIVE_UPLOADS_PER_USER,default=10"`
+	HTTPReadTimeout        string `env:"ENV_HTTP_READ_TIMEOUT,default=5m"`
+	CleanupInterval        string `env:"ENV_CLEANUP_INTERVAL,default=1h"`
+	UploadRetention        string `env:"ENV_UPLOAD_RETENTION,default=168h"`
+	AllowedOrigins         string `env:"ENV_CORS_ALLOWED_ORIGINS,default=http://localhost:3000"`
+	TrustedProxies         string `env:"ENV_TRUSTED_PROXIES"`
+	Issuer                 string `env:"ENV_ISSUER,default=issuer.palpaul.com"`
+	AutoAlbumRunAt         string `env:"ENV_AUTO_ALBUM_RUN_AT,default=02:00"`
+	AutoAlbumZone          string `env:"ENV_AUTO_ALBUM_TIMEZONE,default=Local"`
+	MomentsInterval        string `env:"ENV_MOMENTS_INTERVAL,default=168h"`
+	MomentsCVWorker        string `env:"ENV_MOMENTS_CV_WORKER"`
+	MomentsGeminiURL       string `env:"ENV_MOMENTS_GEMINI_URL,default=https://generativelanguage.googleapis.com/v1beta"`
+	MomentsGeminiAPIKey    string `env:"ENV_MOMENTS_GEMINI_API_KEY"`
+	MomentsGeminiModel     string `env:"ENV_MOMENTS_GEMINI_MODEL,default=gemini-3.5-flash-lite"`
+	MomentsGeminiTextModel string `env:"ENV_MOMENTS_GEMINI_TEXT_MODEL,default=gemini-3.5-flash-lite"`
+	MomentsEmbeddingURL    string `env:"ENV_MOMENTS_EMBEDDING_URL"`
+	MomentsEmbeddingModel  string `env:"ENV_MOMENTS_EMBEDDING_MODEL,default=openai/clip-vit-base-patch32"`
+	NASImportPath          string `env:"NAS_IMPORT_PATH"`
 }
 
 // Initializing environment variables
@@ -98,6 +108,10 @@ func run() error {
 	if err != nil || uploadRetention <= 0 {
 		return fmt.Errorf("ENV_UPLOAD_RETENTION must be a positive duration")
 	}
+	momentsInterval, err := time.ParseDuration(envVar.MomentsInterval)
+	if err != nil || momentsInterval <= 0 {
+		return fmt.Errorf("ENV_MOMENTS_INTERVAL must be a positive duration")
+	}
 	trustedProxies, err := parseTrustedProxies(envVar.TrustedProxies)
 	if err != nil {
 		return err
@@ -114,7 +128,11 @@ func run() error {
 	}
 
 	authService := auth.NewService(database, envVar.Issuer, auth.WithTrustedProxies(trustedProxies))
-	adminConfigEnabled, err := parseYesNo(envVar.AdminConfig)
+	adminConfigEnabled, err := parseYesNo("ENV_ADMIN_CONFIG", envVar.AdminConfig)
+	if err != nil {
+		return err
+	}
+	aiEnabled, err := parseYesNo("ENV_AI_FEATURE", envVar.AIFeature)
 	if err != nil {
 		return err
 	}
@@ -153,11 +171,35 @@ func run() error {
 	}
 	userService := userapp.NewService(database, envVar.Issuer, envVar.MediaDir)
 	galleryService := gallery.NewService(database, envVar.MediaDir)
+	momentOptions := []moments.Option{moments.WithAIFeaturesEnabled(aiEnabled)}
+	if worker := strings.TrimSpace(envVar.MomentsCVWorker); aiEnabled && worker != "" {
+		momentOptions = append(momentOptions, moments.WithClusterer(moments.NewCommandClusterer(worker, envVar.MediaDir)))
+		slog.Info("visual moment clustering enabled", "worker", worker)
+	}
+	if apiKey := strings.TrimSpace(envVar.MomentsGeminiAPIKey); aiEnabled && apiKey != "" {
+		enricher, err := moments.NewGeminiPipeline(envVar.MomentsGeminiURL, apiKey, envVar.MomentsGeminiModel, envVar.MomentsGeminiTextModel, envVar.MediaDir)
+		if err != nil {
+			return fmt.Errorf("configure moment metadata enrichment: %w", err)
+		}
+		momentOptions = append(momentOptions, moments.WithImageDescriber(enricher), moments.WithMetadataSynthesizer(enricher))
+		slog.Info("moment metadata enrichment enabled", "provider", "gemini", "vision_model", envVar.MomentsGeminiModel,
+			"text_model", envVar.MomentsGeminiTextModel)
+	}
+	momentsService := moments.New(database, momentOptions...)
 	operationsService, err := operations.New(database, uploaderService, envVar.MediaDir, envVar.TmpDir, envVar.MinDiskFree)
 	if err != nil {
 		return fmt.Errorf("create operations service: %w", err)
 	}
-	processingService := processing.New(database, envVar.MediaDir)
+	processingOptions := make([]processing.Option, 0, 1)
+	if endpoint := strings.TrimSpace(envVar.MomentsEmbeddingURL); aiEnabled && endpoint != "" {
+		embedder, err := processing.NewHTTPImageEmbedder(endpoint, envVar.MomentsEmbeddingModel)
+		if err != nil {
+			return fmt.Errorf("configure image embeddings: %w", err)
+		}
+		processingOptions = append(processingOptions, processing.WithImageEmbedder(embedder))
+		slog.Info("image embeddings enabled", "model", envVar.MomentsEmbeddingModel)
+	}
+	processingService := processing.New(database, envVar.MediaDir, processingOptions...)
 	publicShareService := publicshare.New(database, envVar.MediaDir)
 	trashService := trash.New(database, envVar.MediaDir)
 	batchService := batch.New(database)
@@ -211,6 +253,7 @@ func run() error {
 	protected.GET("/media/files/:id/download", userService.DownloadMedia)
 	protected.GET("/media/files/:id/thumbnail", userService.DownloadThumbnail)
 	gallery.RegisterRoutes(protected, galleryService)
+	moments.RegisterRoutes(protected, momentsService)
 
 	userRoutes := protected.Group("/")
 	userRoutes.Use(userService.RequireRole("user"))
@@ -234,6 +277,12 @@ func run() error {
 	defer stopScheduler()
 	go processingService.Run(schedulerCtx)
 	go trashService.Run(schedulerCtx)
+	if aiEnabled {
+		go momentsService.RunScheduled(schedulerCtx, momentsInterval, func(err error) {
+			slog.Error("moment generation failed", "error", err)
+		})
+		slog.Info("moment generation scheduled", "interval", momentsInterval)
+	}
 	if nasImportService != nil {
 		go nasImportService.RunScheduled(schedulerCtx, autoAlbumSchedule, func(err error) {
 			slog.Error("NAS media import failed", "error", err)
@@ -330,14 +379,14 @@ func runCleanup(ctx context.Context, service *operations.Service, interval, uplo
 	}
 }
 
-func parseYesNo(value string) (bool, error) {
+func parseYesNo(name, value string) (bool, error) {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case "YES":
 		return true, nil
 	case "NO":
 		return false, nil
 	default:
-		return false, fmt.Errorf("ENV_ADMIN_CONFIG must be YES or NO")
+		return false, fmt.Errorf("%s must be YES or NO", name)
 	}
 }
 

@@ -18,6 +18,7 @@ account used by Container Manager:
 ```text
 /volume1/docker/next-gallery-server/postgres
 /volume1/docker/next-gallery-server/backups
+/volume1/docker/next-gallery-server/models
 /volume1/media/gallery
 /volume1/media/import
 /volume1/media/tmp
@@ -28,6 +29,10 @@ Synology may validate bind-mount sources before Compose processes
 uses a volume other than `volume1`, update every source path in the Compose
 file.
 
+Moment descriptions and titles use the hosted Gemini API, so the NAS does not
+need local model storage or inference memory. Outbound HTTPS access to
+`generativelanguage.googleapis.com` is required when enrichment is enabled.
+
 ### 2. Configure the project
 
 Edit `build/compose.synology.yaml` and replace every `<change-me>` value. The
@@ -35,6 +40,16 @@ PostgreSQL username and password in `ENV_DATABASE_URL` must match the values on
 the `postgres` service. Use a bootstrap password of at least 12 characters for
 `ENV_ADMIN_PASSWORD`. Set `ENV_ISSUER` to the name that should appear in the
 authenticator application.
+
+Set `ENV_AI_FEATURE` under the `server` environment to `YES` to enable CLIP
+embeddings, Gemini-backed Moment generation, and AI metadata suggestions, or
+`NO` to disable all AI behavior while retaining uploads, Albums, and manual
+Moment management. The embedding service is in the optional `ai` Compose
+profile, so enable that profile only when AI is enabled. Replace
+`ENV_MOMENTS_GEMINI_API_KEY` with a paid-tier Gemini API key. Paid-tier
+requests are not used to improve Google's products; selected photos are still
+sent to Google for processing. A missing key makes Gemini unavailable even when
+the global flag is enabled.
 
 Set `ENV_CORS_ALLOWED_ORIGINS` to the exact browser origin, including scheme and
 port but excluding the path and trailing slash. For example:
@@ -51,7 +66,7 @@ include `null` under normal operation.
 
 In DSM, open **Container Manager > Project > Create**, choose the Compose file,
 and use `next-gallery-server` as the project name. Review the generated project
-and start it. Wait for both `postgres` and `server` to report healthy.
+and start it. Wait for `postgres` and `server` to report healthy.
 
 The Synology Compose file contains all settings and does not require a `.env`
 file. As an alternative, deploy it from SSH while in the repository directory:
@@ -59,6 +74,26 @@ file. As an alternative, deploy it from SSH while in the repository directory:
 ```sh
 docker compose -f build/compose.synology.yaml pull
 docker compose -f build/compose.synology.yaml up -d
+```
+
+For an AI-enabled deployment, set `ENV_AI_FEATURE` to `YES` and include the
+profile in both commands:
+
+```sh
+docker compose -f build/compose.synology.yaml --profile ai pull
+docker compose -f build/compose.synology.yaml --profile ai up -d
+```
+
+The `server` and `embedding-api` services use release-managed `latest` images.
+Publish a new non-prerelease repository release before deploying this
+configuration to a remote NAS; the image publishing workflow updates both
+tags.
+
+Verify that the server has outbound connectivity to the Gemini API:
+
+```sh
+docker compose -f build/compose.synology.yaml exec server \
+  wget -qO- https://generativelanguage.googleapis.com/
 ```
 
 ### 4. Complete initial setup
@@ -100,8 +135,30 @@ processing runs before imported media becomes eligible for automatic albums,
 which group media by capture date when that metadata is available.
 
 Images are published for `linux/amd64` and `linux/arm64`. The application image
-includes FFmpeg for later thumbnail and preview processing and runs as a
-non-root user.
+includes FFmpeg, OpenCV, and `/app/worker`, and runs as a non-root
+user.
+
+## Moments
+
+Moment generation considers unassigned, processed photos captured within the
+previous seven days. A group must contain at least three photos. Gemini receives
+selected representatives that do not already have cached descriptions, then a
+text-only request generates metadata. The Moment is created as a draft only
+when confidence is at least `0.65`. Each photo can belong to only one generated
+Moment for that owner. Deleting a declined draft preserves the source photos and
+returns them to the future candidate pool.
+
+Gemini is not called for each upload. With AI enabled, the private CPU CLIP
+service embeds the generated thumbnail during normal media processing. Moment
+generation and user-triggered Moment or Album metadata suggestions call Gemini
+later. Metadata suggestions randomly sample at most six member photos and reuse
+cached descriptions.
+
+Change `ENV_MOMENTS_INTERVAL` to control background generation; `168h` runs it
+weekly. The Compose project pulls the private multi-architecture CPU CLIP image
+from GHCR and caches its model under
+`/volume1/docker/next-gallery-server/models`. The gallery waits for that service
+to become healthy before processing uploads.
 
 ## Reverse proxy
 

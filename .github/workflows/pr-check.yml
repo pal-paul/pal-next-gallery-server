@@ -39,7 +39,7 @@ jobs:
         run: go test ./...
 
   build-image:
-    name: Build uploader image
+    name: Build container images
     needs: go-checks
     runs-on: ubuntu-latest
     steps:
@@ -62,7 +62,7 @@ jobs:
             echo "port=$ENV_PORT"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build uploader image
+      - name: Build server image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -76,3 +76,12 @@ jobs:
             ENV_PORT=${{ steps.image-config.outputs.port }}
           cache-from: type=gha,scope=container-image-amd64
           cache-to: type=gha,mode=max,scope=container-image-amd64
+
+      - name: Build embedding image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: embedding/Dockerfile
+          push: false
+          cache-from: type=gha,scope=embedding-image-amd64
+          cache-to: type=gha,mode=max,scope=embedding-image-amd64

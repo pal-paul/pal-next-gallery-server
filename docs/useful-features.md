@@ -134,11 +134,42 @@ prevent a stored cookie from being sent.
   restores manual albums and only associates media currently owned by the
   importer.
 
+## Moments and AI metadata
+
+- `GET /features` returns `{ "ai": true }` only when `ENV_AI_FEATURE` is enabled
+  and the required Gemini providers are configured. Clients should hide or
+  disable AI actions when it is false.
+- `POST /moments` creates a manual, user-edited draft from one or more photos.
+  `POST /moments/generate` runs AI-assisted discovery immediately; the default
+  background interval is `168h`.
+- Generated Moments remain drafts until the user publishes them. Users can edit
+  title and description, add or remove photos, select a cover, or delete a
+  draft. Deleting a declined draft does not delete media and makes those photos
+  eligible for future Moment generation.
+- `POST /moments/{id}/metadata-suggestion` and `POST
+/albums/{id}/metadata-suggestion` randomly sample at most six member photos,
+  reuse cached descriptions, and return editable title and description
+  suggestions. They do not update the collection directly.
+- Uploading an image does not call Gemini. When AI is enabled, background media
+  processing creates one local CLIP embedding. Gemini Vision is used later only
+  for selected images without cached descriptions; Gemini Text synthesizes
+  metadata from those descriptions.
+- `ENV_AI_FEATURE=NO` disables CLIP embeddings, Gemini configuration, scheduled
+  Moment discovery, manual AI discovery, and metadata suggestions. Uploads,
+  manual Moments, Albums, and all non-AI editing remain available.
+
+## Album editing
+
+- The web Album detail view exposes **Add images** beside Edit. It opens a
+  multi-select picker containing active photos that are not already members.
+- Album title and description remain manually editable before and after an AI
+  suggestion. Adding images and changing the cover are independent of Gemini.
+
 ## Embedded pages
 
 - `/media/app` is the mobile-friendly media workspace with multi-file resumable
   upload, duplicate preflight, batch progress, thumbnails, import/export,
-  recovery codes, and public-link creation.
+  recovery codes, public-link creation, Album editing, and the Moment workflow.
 - `/admin/config` includes storage usage, quotas, password resets, and trash
   retention controls.
 

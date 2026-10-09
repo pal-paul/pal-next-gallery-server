@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useState } from 'react'
 import { Search } from 'lucide-react'
 import { ApiError, demoMode } from './api/apiClient'
 import { galleryApi } from './api/galleryApi'
+import { momentsApi } from './api/momentsApi'
 import { AlbumGrid } from './components/AlbumGrid'
 import { AlbumDetailGallery } from './components/AlbumDetailGallery'
 import { AppHeader } from './components/AppHeader'
@@ -11,12 +12,13 @@ import { LibraryToolbar } from './components/LibraryToolbar'
 import { MediaTimeline } from './components/MediaTimeline'
 import { MediaMap } from './components/MediaMap'
 import { MediaViewer } from './components/MediaViewer'
+import { MomentsView } from './components/MomentsView'
+import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaItem, MediaSort, Moment, StorageStats } from './types/gallery'
 import { PageHeading } from './components/PageHeading'
 import { SelectionBar } from './components/SelectionBar'
 import { ShareMediaDialog, type SharePermission } from './components/ShareMediaDialog'
 import { StorageDashboard } from './components/StorageDashboard'
 import { albumSeed, mediaSeed } from './data/gallerySeed'
-import type { Album, GalleryID, LibraryView, MediaFilter, MediaGrouping, MediaItem, MediaSort, StorageStats } from './types/gallery'
 import './App.css'
 
 type Props = { onLogout: () => Promise<void> }
@@ -34,6 +36,13 @@ function App({ onLogout }: Props) {
   const [view, setView] = useState<LibraryView>('albums')
   const [albums, setAlbums] = useState<Album[]>(() => demoMode ? structuredClone(albumSeed) : [])
   const [media, setMedia] = useState<MediaItem[]>(() => demoMode ? structuredClone(mediaSeed) : [])
+  const [moments, setMoments] = useState<Moment[]>([])
+  const [activeMoment, setActiveMoment] = useState<Moment>()
+  const [momentsLoading, setMomentsLoading] = useState(false)
+  const [generatingMoments, setGeneratingMoments] = useState(false)
+	const [creatingMoment, setCreatingMoment] = useState(false)
+  const [aiEnabled, setAiEnabled] = useState(false)
+  const [albumAiPending, setAlbumAiPending] = useState(false)
   const [activeAlbumId, setActiveAlbumId] = useState<GalleryID | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<MediaFilter>('all')
@@ -47,6 +56,7 @@ function App({ onLogout }: Props) {
   const [initializing, setInitializing] = useState(!demoMode)
   const [viewerMediaId, setViewerMediaId] = useState<GalleryID | null>(null)
   const [showEditAlbum, setShowEditAlbum] = useState(false)
+	const [editAlbumAdding, setEditAlbumAdding] = useState(false)
   const [storageStats, setStorageStats] = useState<StorageStats>()
   const [editAlbumName, setEditAlbumName] = useState('')
   const [editAlbumDescription, setEditAlbumDescription] = useState('')
@@ -61,9 +71,11 @@ function App({ onLogout }: Props) {
   useEffect(() => {
     if (demoMode) return
     const controller = new AbortController()
-    Promise.all([galleryApi.loadAlbums(controller.signal), galleryApi.loadMedia(controller.signal)]).then(([loadedAlbums, loadedMedia]) => {
+    Promise.all([galleryApi.loadAlbums(controller.signal), galleryApi.loadMedia(controller.signal), momentsApi.list(controller.signal), momentsApi.features()]).then(([loadedAlbums, loadedMedia, loadedMoments, features]) => {
       setAlbums(loadedAlbums)
       setMedia(loadedMedia)
+      setMoments(loadedMoments)
+	  setAiEnabled(features.ai)
       setTargetAlbumId(loadedAlbums[0]?.id ?? '')
       setConnected(true)
     }).catch((error: unknown) => {
@@ -94,6 +106,119 @@ function App({ onLogout }: Props) {
     setView('albums')
     setActiveAlbumId(null)
     setSelected([])
+  }
+
+  const showMoments = async () => {
+    setView('moments')
+    setActiveAlbumId(null)
+    setActiveMoment(undefined)
+  	setCreatingMoment(false)
+    setSelected([])
+    if (!connected) return
+    setMomentsLoading(true)
+    try {
+      setMoments(await momentsApi.list())
+    } finally {
+      setMomentsLoading(false)
+    }
+  }
+
+  const openMoment = async (id: GalleryID) => {
+  if (demoMode) {
+    setActiveMoment(moments.find((moment) => moment.id === id))
+    return
+  }
+    setMomentsLoading(true)
+    try {
+      setActiveMoment(await momentsApi.get(id))
+    } finally {
+      setMomentsLoading(false)
+    }
+  }
+
+  const generateMoments = async () => {
+    if (!connected || generatingMoments) return
+    setGeneratingMoments(true)
+    try {
+      await momentsApi.generate()
+      setMoments(await momentsApi.list())
+    } finally {
+      setGeneratingMoments(false)
+    }
+  }
+
+  const refreshActiveMoment = async () => {
+    if (!activeMoment) return
+    const refreshed = await momentsApi.get(activeMoment.id)
+    setActiveMoment(refreshed)
+    setMoments((items) => items.map((item) => item.id === refreshed.id ? refreshed : item))
+  }
+
+  const createMoment = async (title: string, description: string, mediaIds: string[]) => {
+  const created = demoMode
+    ? (() => {
+        const selectedMedia = media.filter((item) => mediaIds.includes(item.id)).toSorted((first, second) => first.createdAt.localeCompare(second.createdAt))
+        const now = new Date().toISOString()
+        return {
+          id: crypto.randomUUID(), title, description, status: 'draft' as const,
+          startTime: selectedMedia[0]?.createdAt ?? now,
+          endTime: selectedMedia.at(-1)?.createdAt ?? now,
+          imageCount: selectedMedia.length,
+          coverMediaId: selectedMedia[0]?.id,
+          coverUrl: selectedMedia[0]?.thumbnailUrl ?? selectedMedia[0]?.url,
+          createdAt: now,
+          userEdited: true,
+          media: selectedMedia.map((item) => ({ id: item.id, fileName: item.fileName ?? item.title, thumbnailUrl: item.thumbnailUrl ?? item.url, capturedAt: item.createdAt, representative: false })),
+        }
+      })()
+    : await momentsApi.create(title, description, mediaIds)
+    setMoments((items) => [created, ...items])
+    setActiveMoment(created)
+  }
+
+  const updateMoment = async (title: string, description: string, status: Moment['status']) => {
+    if (!activeMoment) return
+	if (!demoMode) await momentsApi.update(activeMoment.id, title, description, status)
+    setActiveMoment({ ...activeMoment, title, description, status })
+    setMoments((items) => items.map((item) => item.id === activeMoment.id ? { ...item, title, description, status } : item))
+  }
+
+  const deleteMoment = async () => {
+    if (!activeMoment) return
+	if (!demoMode) await momentsApi.delete(activeMoment.id)
+    setMoments((items) => items.filter((item) => item.id !== activeMoment.id))
+    setActiveMoment(undefined)
+  }
+
+  const addMomentMedia = async (mediaIds: string[]) => {
+    if (!activeMoment) return
+  if (!demoMode) {
+    await momentsApi.addMedia(activeMoment.id, mediaIds)
+    await refreshActiveMoment()
+    return
+  }
+  const additions = media.filter((item) => mediaIds.includes(item.id) && !activeMoment.media?.some((member) => member.id === item.id))
+  const updated = { ...activeMoment, imageCount: activeMoment.imageCount + additions.length, media: [...(activeMoment.media ?? []), ...additions.map((item) => ({ id: item.id, fileName: item.fileName ?? item.title, thumbnailUrl: item.thumbnailUrl ?? item.url, capturedAt: item.createdAt, representative: false }))] }
+  setActiveMoment(updated)
+  setMoments((items) => items.map((item) => item.id === updated.id ? updated : item))
+  }
+
+  const removeMomentMedia = async (mediaId: string) => {
+    if (!activeMoment) return
+  if (!demoMode) {
+    await momentsApi.removeMedia(activeMoment.id, mediaId)
+    await refreshActiveMoment()
+    return
+  }
+  const members = activeMoment.media?.filter((member) => member.id !== mediaId) ?? []
+  const updated = { ...activeMoment, imageCount: members.length, media: members }
+  setActiveMoment(updated)
+  setMoments((items) => items.map((item) => item.id === updated.id ? updated : item))
+  }
+
+  const suggestMomentMetadata = async () => {
+    if (!activeMoment) return { title: '', description: '' }
+    return momentsApi.suggestMetadata(activeMoment.id)
   }
 
   const loadAllMedia = async () => {
@@ -261,12 +386,21 @@ function App({ onLogout }: Props) {
     setSelected((current) => current.filter((id) => id !== mediaId))
   }
 
-  const openEditAlbum = () => {
+  const openEditAlbum = (adding = false) => {
     if (!activeAlbum) return
     setEditAlbumName(activeAlbum.title)
     setEditAlbumDescription(activeAlbum.description ?? '')
     setEditCoverMediaId(activeAlbum.coverMediaId ?? activeAlbum.mediaIds.find((id) => media.find((item) => item.id === id)?.kind === 'photo'))
+  setEditAlbumAdding(adding)
     setShowEditAlbum(true)
+  }
+
+  const addMediaToActiveAlbum = async (mediaIds: GalleryID[]) => {
+    if (!activeAlbum) return
+    if (connected) await galleryApi.addMedia(activeAlbum.id, mediaIds)
+    setAlbums((current) => current.map((album) => album.id === activeAlbum.id
+      ? { ...album, mediaIds: [...new Set([...album.mediaIds, ...mediaIds])], itemCount: new Set([...album.mediaIds, ...mediaIds]).size }
+      : album))
   }
 
   const saveAlbumEdits = async () => {
@@ -282,6 +416,18 @@ function App({ onLogout }: Props) {
     setShowEditAlbum(false)
   }
 
+  const suggestAlbumMetadata = async () => {
+    if (!activeAlbum || albumAiPending) return
+    setAlbumAiPending(true)
+    try {
+      const suggestion = await galleryApi.suggestAlbumMetadata(activeAlbum.id)
+      setEditAlbumName(suggestion.title)
+      setEditAlbumDescription(suggestion.description)
+    } finally {
+      setAlbumAiPending(false)
+    }
+  }
+
   const viewerIndex = visibleMedia.findIndex((item) => item.id === viewerMediaId)
   const viewerItem = viewerIndex >= 0 ? visibleMedia[viewerIndex] : undefined
   const showViewerItem = (offset: number) => {
@@ -294,24 +440,25 @@ function App({ onLogout }: Props) {
 
   return (
     <div className="app-shell">
-      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onLogout={onLogout} />
+      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMoments={() => void showMoments()} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onCreateMoment={() => { setView('moments'); setActiveMoment(undefined); setCreatingMoment(true) }} onFindMoments={() => void generateMoments()} aiEnabled={aiEnabled} generatingMoments={generatingMoments} canUpload={connected && !demoMode} onUploaded={loadAllMedia} onLogout={onLogout} />
       <main>
-        <PageHeading view={view} album={activeAlbum} albumCount={albums.length} mediaCount={view === 'favorites' || view === 'trash' ? visibleMedia.length : media.length} favoriteCount={media.filter((item) => item.favorite && !item.deletedAt).length} onBack={showAlbums} onEdit={openEditAlbum} />
-        {view !== 'storage' && !activeAlbum && <LibraryToolbar view={view} query={query} filter={filter} sort={sort} grouping={grouping} onQueryChange={setQuery} onFilterChange={setFilter} onSortChange={setSort} onGroupingChange={setGrouping} />}
-        <SelectionBar count={selected.length} albums={albums} targetAlbumId={targetAlbumId} onTargetChange={setTargetAlbumId} onAdd={addSelectedToAlbum} onClear={() => setSelected([])} />
-        {view === 'albums'
+        {view !== 'moments' && <PageHeading view={view} album={activeAlbum} albumCount={albums.length} mediaCount={view === 'favorites' || view === 'trash' ? visibleMedia.length : media.length} favoriteCount={media.filter((item) => item.favorite && !item.deletedAt).length} onBack={showAlbums} onEdit={() => openEditAlbum()} onAddImages={() => openEditAlbum(true)} />}
+        {!['storage', 'moments'].includes(view) && !activeAlbum && <LibraryToolbar view={view} query={query} filter={filter} sort={sort} grouping={grouping} onQueryChange={setQuery} onFilterChange={setFilter} onSortChange={setSort} onGroupingChange={setGrouping} />}
+        {view !== 'moments' && <SelectionBar count={selected.length} albums={albums} targetAlbumId={targetAlbumId} onTargetChange={setTargetAlbumId} onAdd={addSelectedToAlbum} onClear={() => setSelected([])} />}
+        {view === 'moments' ? <MomentsView key={`${activeMoment?.id ?? 'none'}-${creatingMoment}`} moments={moments} activeMoment={activeMoment} loading={momentsLoading} onOpen={(id) => void openMoment(id)} onBack={() => setActiveMoment(undefined)} onViewMedia={setViewerMediaId} media={media} aiEnabled={aiEnabled} onCreate={createMoment} onUpdate={updateMoment} onDelete={deleteMoment} onAddMedia={addMomentMedia} onRemoveMedia={removeMomentMedia} onSuggestMetadata={suggestMomentMetadata} creating={creatingMoment} onCreatingChange={setCreatingMoment} />
+          : view === 'albums'
           ? <AlbumGrid albums={visibleAlbums} onOpen={(id) => void openAlbum(id)} onMove={moveAlbum} />
           : view === 'map' ? <MediaMap media={visibleMedia} onView={setViewerMediaId} />
           : view === 'storage' ? storageStats && <StorageDashboard stats={storageStats} />
           : activeAlbum ? <AlbumDetailGallery album={activeAlbum} media={visibleMedia} selected={selected} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onShare={openShare} onView={setViewerMediaId} />
           : <MediaTimeline media={visibleMedia} grouping={grouping} selected={selected} canRemove={false} canDelete={view === 'media'} inTrash={view === 'trash'} coverMediaId={undefined} onToggle={toggleSelection} onRemove={removeFromActiveAlbum} onSetCover={setAlbumCover} onFavorite={setMediaFavorite} onTrash={trashMedia} onDelete={deleteMedia} onRestore={restoreMedia} onShare={openShare} onView={setViewerMediaId} />}
-        {!['map', 'storage'].includes(view) && (view === 'albums' ? visibleAlbums.length : visibleMedia.length) === 0 && (
+        {!['map', 'storage', 'moments'].includes(view) && (view === 'albums' ? visibleAlbums.length : visibleMedia.length) === 0 && (
           <section className="empty-state"><Search size={28} /><h2>No memories found</h2><p>Try a different title, tag, date, or filter.</p></section>
         )}
       </main>
       <CreateAlbumDialog open={showCreate} name={newAlbumName} onNameChange={setNewAlbumName} onClose={() => setShowCreate(false)} onCreate={createAlbum} />
       <ShareMediaDialog open={Boolean(shareMediaId)} username={shareUsername} permission={sharePermission} error={shareError} pending={sharing} onUsernameChange={(value) => { setShareUsername(value); setShareError(undefined) }} onPermissionChange={(value) => { setSharePermission(value); setShareError(undefined) }} onClose={() => { if (!sharing) setShareMediaId(null) }} onShare={() => void shareMedia()} />
-      {activeAlbum && <EditAlbumDialog open={showEditAlbum} album={activeAlbum} media={media} name={editAlbumName} description={editAlbumDescription} coverMediaId={editCoverMediaId} onNameChange={setEditAlbumName} onDescriptionChange={setEditAlbumDescription} onCoverChange={setEditCoverMediaId} onClose={() => setShowEditAlbum(false)} onSave={saveAlbumEdits} />}
+      {activeAlbum && <EditAlbumDialog key={`${activeAlbum.id}-${showEditAlbum}-${editAlbumAdding}`} open={showEditAlbum} album={activeAlbum} media={media} name={editAlbumName} description={editAlbumDescription} coverMediaId={editCoverMediaId} onNameChange={setEditAlbumName} onDescriptionChange={setEditAlbumDescription} onCoverChange={setEditCoverMediaId} onClose={() => setShowEditAlbum(false)} onSave={saveAlbumEdits} aiEnabled={aiEnabled} aiPending={albumAiPending} onSuggestMetadata={() => void suggestAlbumMetadata()} startAdding={editAlbumAdding} onAddMedia={addMediaToActiveAlbum} />}
       {viewerItem && <MediaViewer item={viewerItem} hasMultiple={visibleMedia.length > 1} onClose={() => setViewerMediaId(null)} onPrevious={() => showViewerItem(-1)} onNext={() => showViewerItem(1)} />}
     </div>
   )

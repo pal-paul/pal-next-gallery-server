@@ -29,6 +29,20 @@ func (store *Postgres) ListExpiredTrash(ctx context.Context, now time.Time, limi
 }
 
 func (store *Postgres) DeleteExpiredMedia(ctx context.Context, mediaID string) error {
-	_, err := store.pool.Exec(ctx, `DELETE FROM media_uploads WHERE upload_id = $1 AND deleted_at IS NOT NULL`, mediaID)
-	return err
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	affected, err := affectedMomentsForMedia(ctx, transaction, mediaID)
+	if err != nil {
+		return err
+	}
+	if _, err := transaction.Exec(ctx, `DELETE FROM media_uploads WHERE upload_id = $1 AND deleted_at IS NOT NULL`, mediaID); err != nil {
+		return err
+	}
+	if err := reconcileAffectedMoments(ctx, transaction, affected, true); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }

@@ -1,5 +1,5 @@
 export type MediaKind = 'photo' | 'video'
-export type LibraryView = 'albums' | 'media' | 'favorites' | 'trash' | 'map' | 'storage'
+export type LibraryView = 'albums' | 'moments' | 'media' | 'favorites' | 'trash' | 'map' | 'storage'
 export type MediaFilter = 'all' | MediaKind
 export type MediaSort = 'newest' | 'oldest' | 'title'
 export type MediaGrouping = 'none' | 'day' | 'month' | 'year'
@@ -49,4 +49,28 @@ export type Album = {
   mediaIds: GalleryID[]
   coverMediaId?: GalleryID
   coverUrl?: string
+}
+
+export type MomentMedia = {
+  id: GalleryID
+  fileName: string
+  thumbnailUrl?: string
+  capturedAt: string
+  representative: boolean
+}
+
+export type Moment = {
+  id: GalleryID
+  title: string
+  description: string
+  status: 'draft' | 'published' | 'archived'
+  startTime: string
+  endTime: string
+  locationName?: string
+  imageCount: number
+  coverMediaId?: GalleryID
+  coverUrl?: string
+  createdAt: string
+	userEdited?: boolean
+  media?: MomentMedia[]
 }

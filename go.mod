@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pal-paul/go-libraries v1.0.3
 	github.com/pquerna/otp v1.5.0
+	gocv.io/x/gocv v0.42.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 )

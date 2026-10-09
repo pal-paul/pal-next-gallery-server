@@ -119,7 +119,58 @@ CREATE TABLE IF NOT EXISTS media_exif (
 	captured_at TIMESTAMPTZ,
 	latitude DOUBLE PRECISION,
 	longitude DOUBLE PRECISION,
+	camera_make TEXT NOT NULL DEFAULT '',
+	camera_model TEXT NOT NULL DEFAULT '',
+	orientation TEXT NOT NULL DEFAULT '',
+	perceptual_hash TEXT NOT NULL DEFAULT '',
 	raw_exif JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS camera_make TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS camera_model TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS orientation TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS perceptual_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS media_exif_perceptual_hash_idx ON media_exif(perceptual_hash) WHERE perceptual_hash <> '';
+CREATE TABLE IF NOT EXISTS media_duplicate_groups (
+	id TEXT PRIMARY KEY,
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL CHECK (kind IN ('near')),
+	primary_upload_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS media_duplicate_group_members (
+	group_id TEXT NOT NULL REFERENCES media_duplicate_groups(id) ON DELETE CASCADE,
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	hamming_distance INTEGER NOT NULL CHECK (hamming_distance BETWEEN 0 AND 64),
+	is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (group_id, upload_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS media_duplicate_member_near_idx ON media_duplicate_group_members(upload_id);
+CREATE UNIQUE INDEX IF NOT EXISTS media_duplicate_primary_idx ON media_duplicate_group_members(group_id) WHERE is_primary;
+CREATE TABLE IF NOT EXISTS media_embeddings (
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	model TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT '',
+	dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+	embedding DOUBLE PRECISION[] NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (upload_id, model, version),
+	CHECK (array_length(embedding, 1) = dimensions)
+);
+CREATE INDEX IF NOT EXISTS media_embeddings_upload_idx ON media_embeddings(upload_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS media_image_descriptions (
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	model TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT '',
+	people TEXT[] NOT NULL DEFAULT '{}',
+	activities TEXT[] NOT NULL DEFAULT '{}',
+	location_type TEXT NOT NULL DEFAULT '',
+	objects TEXT[] NOT NULL DEFAULT '{}',
+	scene TEXT NOT NULL DEFAULT '',
+	weather TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (upload_id, model, version)
 );
 CREATE TABLE IF NOT EXISTS media_shares (
 	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
@@ -195,4 +246,31 @@ CREATE TABLE IF NOT EXISTS media_preferences (
 	favorite BOOLEAN NOT NULL DEFAULT FALSE,
 	PRIMARY KEY (upload_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS moments (
+	id UUID PRIMARY KEY,
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	title TEXT NOT NULL CHECK (length(btrim(title)) > 0),
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+	start_time TIMESTAMPTZ NOT NULL,
+	end_time TIMESTAMPTZ NOT NULL,
+	location_name TEXT NOT NULL DEFAULT '',
+	image_count BIGINT NOT NULL DEFAULT 0 CHECK (image_count >= 0),
+	cover_media_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL,
+	user_edited BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	CHECK (end_time >= start_time)
+);
+CREATE INDEX IF NOT EXISTS moments_owner_start_idx ON moments(owner_id, start_time DESC);
+CREATE TABLE IF NOT EXISTS moment_media (
+	moment_id UUID NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	similarity_score DOUBLE PRECISION,
+	representative_score DOUBLE PRECISION,
+	is_representative BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (moment_id, upload_id)
+);
+CREATE INDEX IF NOT EXISTS moment_media_upload_idx ON moment_media(upload_id);
 `

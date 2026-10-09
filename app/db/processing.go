@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math/bits"
+	"strconv"
 	"time"
 
 	"pal-next-gallery-server/app/processing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+const nearDuplicateHammingThreshold = 5
 
 func (store *Postgres) ClaimProcessingJob(ctx context.Context) (processing.Job, bool, error) {
 	transaction, err := store.pool.Begin(ctx)
@@ -60,17 +66,101 @@ func (store *Postgres) CompleteProcessingJob(ctx context.Context, job processing
 	if len(rawEXIF) == 0 {
 		rawEXIF = json.RawMessage(`{}`)
 	}
-	if _, err := transaction.Exec(ctx, `INSERT INTO media_exif (upload_id, captured_at, latitude, longitude, raw_exif)
-		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (upload_id) DO UPDATE SET captured_at = EXCLUDED.captured_at,
-		latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, raw_exif = EXCLUDED.raw_exif`,
-		job.UploadID, metadata.CapturedAt, metadata.Latitude, metadata.Longitude, rawEXIF); err != nil {
+	if _, err := transaction.Exec(ctx, `INSERT INTO media_exif
+		(upload_id, captured_at, latitude, longitude, camera_make, camera_model, orientation, perceptual_hash, raw_exif)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (upload_id) DO UPDATE SET
+		captured_at = EXCLUDED.captured_at, latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude,
+		camera_make = EXCLUDED.camera_make, camera_model = EXCLUDED.camera_model,
+		orientation = EXCLUDED.orientation, perceptual_hash = EXCLUDED.perceptual_hash, raw_exif = EXCLUDED.raw_exif`,
+		job.UploadID, metadata.CapturedAt, metadata.Latitude, metadata.Longitude, metadata.CameraMake,
+		metadata.CameraModel, metadata.Orientation, metadata.PerceptualHash, rawEXIF); err != nil {
 		return err
+	}
+	if err := store.groupNearDuplicate(ctx, transaction, job, metadata.PerceptualHash); err != nil {
+		return err
+	}
+	if len(metadata.Embedding.Vector) > 0 {
+		if _, err := transaction.Exec(ctx, `INSERT INTO media_embeddings
+			(upload_id, model, version, dimensions, embedding) VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (upload_id, model, version) DO UPDATE SET dimensions = EXCLUDED.dimensions,
+			embedding = EXCLUDED.embedding, created_at = now()`, job.UploadID, metadata.Embedding.Model,
+			metadata.Embedding.Version, len(metadata.Embedding.Vector), metadata.Embedding.Vector); err != nil {
+			return err
+		}
 	}
 	if _, err := transaction.Exec(ctx, `UPDATE media_processing_jobs SET status = 'completed', last_error = NULL,
 		updated_at = now() WHERE id = $1`, job.ID); err != nil {
 		return err
 	}
 	return transaction.Commit(ctx)
+}
+
+func (store *Postgres) groupNearDuplicate(ctx context.Context, transaction pgx.Tx, job processing.Job, hash string) error {
+	if hash == "" {
+		return nil
+	}
+	rows, err := transaction.Query(ctx, `SELECT media.upload_id, exif.perceptual_hash
+		FROM media_uploads media JOIN media_exif exif ON exif.upload_id = media.upload_id
+		WHERE media.owner_id = $1 AND media.upload_id <> $2 AND media.deleted_at IS NULL
+		AND exif.perceptual_hash <> ''`, job.OwnerID, job.UploadID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	nearestID := ""
+	nearestDistance := 65
+	for rows.Next() {
+		var uploadID, candidateHash string
+		if err := rows.Scan(&uploadID, &candidateHash); err != nil {
+			return err
+		}
+		distance, err := differenceHashDistance(hash, candidateHash)
+		if err == nil && distance < nearestDistance {
+			nearestID, nearestDistance = uploadID, distance
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if nearestDistance > nearDuplicateHammingThreshold {
+		return nil
+	}
+	var groupID string
+	err = transaction.QueryRow(ctx, `SELECT duplicate.group_id
+		FROM media_duplicate_group_members duplicate
+		JOIN media_duplicate_groups group_record ON group_record.id = duplicate.group_id
+		WHERE group_record.owner_id = $1 AND group_record.kind = 'near' AND duplicate.upload_id = $2
+		LIMIT 1`, job.OwnerID, nearestID).Scan(&groupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		groupID = uuid.NewString()
+		if _, err := transaction.Exec(ctx, `INSERT INTO media_duplicate_groups (id, owner_id, kind, primary_upload_id)
+			VALUES ($1, $2, 'near', $3)`, groupID, job.OwnerID, nearestID); err != nil {
+			return err
+		}
+		if _, err := transaction.Exec(ctx, `INSERT INTO media_duplicate_group_members
+			(group_id, upload_id, hamming_distance, is_primary) VALUES ($1, $2, 0, TRUE)`, groupID, nearestID); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	_, err = transaction.Exec(ctx, `INSERT INTO media_duplicate_group_members
+		(group_id, upload_id, hamming_distance, is_primary) VALUES ($1, $2, $3, FALSE)
+		ON CONFLICT (group_id, upload_id) DO UPDATE SET hamming_distance = EXCLUDED.hamming_distance`,
+		groupID, job.UploadID, nearestDistance)
+	return err
+}
+
+func differenceHashDistance(left, right string) (int, error) {
+	leftHash, err := strconv.ParseUint(left, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("decode left perceptual hash: %w", err)
+	}
+	rightHash, err := strconv.ParseUint(right, 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("decode right perceptual hash: %w", err)
+	}
+	return bits.OnesCount64(leftHash ^ rightHash), nil
 }
 
 func (store *Postgres) FailProcessingJob(ctx context.Context, job processing.Job, message string) error {

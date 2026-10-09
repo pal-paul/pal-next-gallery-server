@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/jpeg"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,14 +28,19 @@ type Job struct {
 }
 
 type Metadata struct {
-	ThumbnailPath string
-	Width         int
-	Height        int
-	Duration      float64
-	RawEXIF       json.RawMessage
-	CapturedAt    *time.Time
-	Latitude      *float64
-	Longitude     *float64
+	ThumbnailPath  string
+	Width          int
+	Height         int
+	Duration       float64
+	RawEXIF        json.RawMessage
+	CapturedAt     *time.Time
+	Latitude       *float64
+	Longitude      *float64
+	CameraMake     string
+	CameraModel    string
+	Orientation    string
+	PerceptualHash string
+	Embedding      Embedding
 }
 
 type Repository interface {
@@ -50,11 +56,21 @@ type Service struct {
 	repository Repository
 	mediaDir   string
 	process    func(context.Context, Job) (Metadata, error)
+	embedder   ImageEmbedder
 }
 
-func New(repository Repository, mediaDir string) *Service {
+type Option func(*Service)
+
+func WithImageEmbedder(embedder ImageEmbedder) Option {
+	return func(service *Service) { service.embedder = embedder }
+}
+
+func New(repository Repository, mediaDir string, options ...Option) *Service {
 	service := &Service{repository: repository, mediaDir: filepath.Clean(mediaDir)}
 	service.process = service.processMedia
+	for _, option := range options {
+		option(service)
+	}
 	return service
 }
 
@@ -86,6 +102,16 @@ func (service *Service) ProcessOnce(ctx context.Context) (bool, error) {
 		}
 		return true, err
 	}
+	if service.embedder != nil {
+		thumbnail, pathErr := service.safePath(metadata.ThumbnailPath)
+		if pathErr != nil {
+			return true, service.failJob(job, pathErr)
+		}
+		metadata.Embedding, err = service.embedder.Embed(ctx, thumbnail)
+		if err != nil {
+			return true, service.failJob(job, fmt.Errorf("embed image: %w", err))
+		}
+	}
 	if err := service.repository.CompleteProcessingJob(ctx, job, metadata); err != nil {
 		if failErr := service.recordFailure(job, fmt.Errorf("complete processing job: %w", err)); failErr != nil {
 			return true, fmt.Errorf("complete processing job: %v; record failure: %w", err, failErr)
@@ -93,6 +119,13 @@ func (service *Service) ProcessOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return true, nil
+}
+
+func (service *Service) failJob(job Job, err error) error {
+	if failErr := service.recordFailure(job, err); failErr != nil {
+		return fmt.Errorf("%v; record failure: %w", err, failErr)
+	}
+	return err
 }
 
 func (service *Service) recordFailure(job Job, processingErr error) error {
@@ -143,6 +176,9 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 			tags[strings.ToLower(key)] = value
 		}
 	}
+	metadata.CameraMake = firstTag(tags, "make", "camera_make", "com.apple.quicktime.make")
+	metadata.CameraModel = firstTag(tags, "model", "camera_model", "com.apple.quicktime.model")
+	metadata.Orientation = firstTag(tags, "orientation", "rotate")
 	for _, key := range []string{"creation_time", "date", "datetimeoriginal"} {
 		if value := tags[key]; value != "" {
 			for _, layout := range []string{time.RFC3339, "2006:01:02 15:04:05"} {
@@ -189,7 +225,52 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 		return Metadata{}, fmt.Errorf("ffmpeg thumbnail: %w: %s", err, strings.TrimSpace(string(combined)))
 	}
 	metadata.ThumbnailPath = thumbnailRelative
+	metadata.PerceptualHash, err = differenceHashFile(thumbnail)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("calculate perceptual hash: %w", err)
+	}
 	return metadata, nil
+}
+
+func firstTag(tags map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(tags[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func differenceHashFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	image, err := jpeg.Decode(file)
+	if err != nil {
+		return "", err
+	}
+	bounds := image.Bounds()
+	if bounds.Dx() == 0 || bounds.Dy() == 0 {
+		return "", errors.New("empty thumbnail")
+	}
+	var hash uint64
+	for row := 0; row < 8; row++ {
+		y := bounds.Min.Y + row*bounds.Dy()/8
+		for column := 0; column < 8; column++ {
+			leftX := bounds.Min.X + column*bounds.Dx()/9
+			rightX := bounds.Min.X + (column+1)*bounds.Dx()/9
+			leftR, leftG, leftB, _ := image.At(leftX, y).RGBA()
+			rightR, rightG, rightB, _ := image.At(rightX, y).RGBA()
+			leftLuma := 299*uint64(leftR) + 587*uint64(leftG) + 114*uint64(leftB)
+			rightLuma := 299*uint64(rightR) + 587*uint64(rightG) + 114*uint64(rightB)
+			if leftLuma > rightLuma {
+				hash |= 1 << uint(row*8+column)
+			}
+		}
+	}
+	return fmt.Sprintf("%016x", hash), nil
 }
 
 func (service *Service) safePath(relative string) (string, error) {

@@ -27,11 +27,25 @@ cp .env.example .env
 only by the one-time `/setup` form; they are never stored as an account. The
 bootstrap password must contain at least 12 characters.
 
-Start the API and PostgreSQL:
+Set `ENV_MOMENTS_GEMINI_API_KEY` to a paid-tier Gemini API key to enable
+automatic Moment descriptions and titles. Leave it empty to run without AI
+enrichment.
+
+Start PostgreSQL and the application:
 
 ```bash
 docker compose --env-file .env -f build/compose.yaml up --build
 ```
+
+This starts the core gallery without downloading the CLIP model. To enable AI,
+set `ENV_AI_FEATURE=YES` and start the `ai` profile:
+
+```bash
+docker compose --env-file .env -f build/compose.yaml --profile ai up --build
+```
+
+The OpenCV Moments worker is included in the application image. Selected photos
+are sent to Gemini only when Moment enrichment is enabled.
 
 The example configuration exposes the gallery and API at
 `http://127.0.0.1:8081`. Change `ENV_PORT` in `.env` if that port is occupied.
@@ -46,6 +60,10 @@ After setup, open `http://127.0.0.1:8081/` to sign in to the gallery. Set
 configuration page. The gallery, setup lifecycle, and authenticated JSON APIs
 remain available. Set it back to `YES` and restart to create or manage users in
 the browser.
+
+Regular users can upload one or more photos or videos from the upload button in
+the gallery header. The browser sends large files through the resumable chunked
+upload API and refreshes the library after completion.
 
 For a local source build, run `npm ci && npm run build` in `web` before starting
 the Go server. `ENV_WEB_DIR` defaults to `./web/dist`; the container image builds

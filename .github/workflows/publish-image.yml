@@ -15,6 +15,7 @@ concurrency:
 
 env:
   REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+  EMBEDDING_REGISTRY_IMAGE: ghcr.io/${{ github.repository }}-embedding
 
 jobs:
   build:
@@ -81,6 +82,47 @@ jobs:
           tags: ${{ env.REGISTRY_IMAGE }}:build-${{ matrix.arch }}
           labels: ${{ steps.image-metadata.outputs.labels }}
 
+  build-embedding:
+    name: Build embedding ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: image-metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.EMBEDDING_REGISTRY_IMAGE }}
+
+      - name: Build and push embedding ${{ matrix.platform }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: embedding/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          cache-from: type=registry,ref=${{ env.EMBEDDING_REGISTRY_IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.EMBEDDING_REGISTRY_IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+          tags: ${{ env.EMBEDDING_REGISTRY_IMAGE }}:build-${{ matrix.arch }}
+          labels: ${{ steps.image-metadata.outputs.labels }}
+
   publish:
     name: Publish multi-platform image
     needs: build
@@ -117,3 +159,40 @@ jobs:
 
       - name: Inspect published image
         run: docker buildx imagetools inspect "${REGISTRY_IMAGE}:${{ steps.uploader-metadata.outputs.version }}"
+
+  publish-embedding:
+    name: Publish multi-platform embedding image
+    needs: build-embedding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: embedding-metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.EMBEDDING_REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=sha
+
+      - name: Create multi-platform embedding manifest
+        shell: bash
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.embedding-metadata.outputs.json }}
+        run: |
+          mapfile -t tag_args < <(jq -r '.tags[] | "--tag", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            "${EMBEDDING_REGISTRY_IMAGE}:build-amd64" \
+            "${EMBEDDING_REGISTRY_IMAGE}:build-arm64"
+
+      - name: Inspect published embedding image
+        run: docker buildx imagetools inspect "${EMBEDDING_REGISTRY_IMAGE}:${{ steps.embedding-metadata.outputs.version }}"
