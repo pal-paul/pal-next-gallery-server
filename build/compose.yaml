@@ -20,53 +20,6 @@ services:
         max-size: ${LOG_MAX_SIZE}
         max-file: "${LOG_MAX_FILES}"
 
-  ollama:
-    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-    logging:
-      driver: json-file
-      options:
-        max-size: ${LOG_MAX_SIZE}
-        max-file: "${LOG_MAX_FILES}"
-    restart: ${COMPOSE_RESTART_POLICY}
-
-  ollama-vision-model:
-    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    command: ["pull", "${ENV_MOMENTS_QWEN_MODEL:-qwen3-vl:4b}"]
-    depends_on:
-      ollama:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: ${LOG_MAX_SIZE}
-        max-file: "${LOG_MAX_FILES}"
-    restart: "no"
-
-  ollama-text-model:
-    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    command: ["pull", "${ENV_MOMENTS_QWEN_TEXT_MODEL:-qwen3:4b}"]
-    depends_on:
-      ollama:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: ${LOG_MAX_SIZE}
-        max-file: "${LOG_MAX_FILES}"
-    restart: "no"
-
   server:
     image: ${SERVER_IMAGE}
     build:
@@ -83,9 +36,10 @@ services:
       - ../.env
     environment:
       ENV_MOMENTS_CV_WORKER: /app/moments-cv-worker
-      ENV_MOMENTS_QWEN_URL: http://ollama:11434
-      ENV_MOMENTS_QWEN_MODEL: ${ENV_MOMENTS_QWEN_MODEL:-qwen3-vl:4b}
-      ENV_MOMENTS_QWEN_TEXT_MODEL: ${ENV_MOMENTS_QWEN_TEXT_MODEL:-qwen3:4b}
+      ENV_MOMENTS_GEMINI_URL: ${ENV_MOMENTS_GEMINI_URL:-https://generativelanguage.googleapis.com/v1beta}
+      ENV_MOMENTS_GEMINI_API_KEY: ${ENV_MOMENTS_GEMINI_API_KEY:-}
+      ENV_MOMENTS_GEMINI_MODEL: ${ENV_MOMENTS_GEMINI_MODEL:-gemini-2.5-flash-lite}
+      ENV_MOMENTS_GEMINI_TEXT_MODEL: ${ENV_MOMENTS_GEMINI_TEXT_MODEL:-gemini-2.5-flash-lite}
       ENV_MOMENTS_EMBEDDING_URL: ${ENV_MOMENTS_EMBEDDING_URL:-}
       ENV_MOMENTS_EMBEDDING_MODEL: ${ENV_MOMENTS_EMBEDDING_MODEL:-siglip}
     ports:
@@ -96,10 +50,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama-vision-model:
-        condition: service_completed_successfully
-      ollama-text-model:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${ENV_PORT}/readyz"]
       interval: 30s
@@ -115,6 +65,5 @@ services:
 
 volumes:
   postgres_data:
-  ollama_data:
   media_data:
   upload_tmp:

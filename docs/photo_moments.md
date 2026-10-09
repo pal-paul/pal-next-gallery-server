@@ -27,14 +27,14 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 | Visual clustering                        | Optional                 | The production image packages an OpenCV executable that performs similarity scoring and mutual-reachability MST clustering | Consider canonical HDBSCAN if needed                                |
 | Temporal clustering fallback             | Implemented              | Without the OpenCV worker, candidates are split at 30-minute gaps                                                          | This is less accurate than the full profile                         |
 | Representative selection                 | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images                                                       | Tune weights against labeled collections                            |
-| Structured image descriptions            | Optional                 | Qwen-VL describes each selected semantic image and results are persisted                                                   | Add explicit prompt/schema version values                           |
-| Metadata synthesis                       | Optional                 | A separate Qwen3 text request creates title, description, and confidence                                                   | Add independent retryable AI jobs                                   |
+| Structured image descriptions            | Optional                 | Gemini describes each selected semantic image and results are persisted                                                    | Add explicit prompt/schema version values                           |
+| Metadata synthesis                       | Optional                 | A separate Gemini text request creates title, description, and confidence                                                  | Add independent retryable AI jobs                                   |
 | Moment persistence                       | Implemented              | Advisory locking and one transaction prevent duplicate ownership assignment                                                | None                                                                |
 | Deterministic moment creation without AI | Gap                      | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured            | Add deterministic title/description fallback                        |
 
 ### Important deployment reality
 
-The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path and initialize the Qwen vision and text models before starting the server.
+The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path. Gemini enrichment is enabled when an API key is configured.
 
 The embedding provider remains a separate HTTP service and is not included in either Compose file. Leave `ENV_MOMENTS_EMBEDDING_URL` empty to use histogram similarity, or configure a compatible private endpoint to enable versioned SigLIP/CLIP vectors.
 
@@ -55,21 +55,21 @@ Behavior:
 - Candidate grouping falls back to time-only clustering.
 - Automatic moment generation does not create moments without AI enrichment.
 
-### 3.2 Full local intelligence profile
+### 3.2 Full intelligence profile
 
 Adds:
 
 - OpenCV moment worker built with `-tags opencv`
 - SigLIP/CLIP-compatible embedding HTTP service
-- Ollama or compatible `/api/chat` endpoint
-- Qwen3-VL vision model
-- Qwen3 text model
+- Gemini API access
+- Paid-tier Gemini API key
+- Gemini vision and text models
 
 This profile activates the complete flow documented below.
 
 ### 3.3 External inference profile
 
-The embedding and Qwen endpoints may run on another trusted machine or a temporary GPU host. Only thumbnails or selected semantic images should leave the media host. TLS, authentication, retention controls, and audit logging are deployment responsibilities because the current provider clients do not add service authentication themselves.
+The embedding endpoint may run on another trusted machine. Selected semantic images leave the media host for Gemini processing. Use a paid Gemini tier, restrict and rotate the API key, and define retention and audit policies for this personal data.
 
 ## 4. Production Deployment Topology
 
@@ -88,9 +88,9 @@ flowchart TB
 
     subgraph Models[Optional inference services]
         Embed[SigLIP or CLIP<br/>embedding HTTP service]
-        Ollama[Ollama API]
-        Vision[Qwen3-VL model]
-        Text[Qwen3 text model]
+        Gemini[Gemini API]
+        Vision[Gemini vision model]
+        Text[Gemini text model]
     end
 
     User -->|HTTPS| Proxy
@@ -101,9 +101,9 @@ flowchart TB
     Server -->|JSON over stdin and stdout| CV
     CV -->|read selected image paths| Media
     Server -->|thumbnail as base64 JSON| Embed
-    Server -->|chat requests| Ollama
-    Ollama --> Vision
-    Ollama --> Text
+    Server -->|HTTPS generateContent| Gemini
+    Gemini --> Vision
+    Gemini --> Text
 ```
 
 ### Ownership boundaries
@@ -115,7 +115,7 @@ flowchart TB
 | Media volume      | Original files and generated thumbnails                            | Queue state             |
 | OpenCV worker     | Per-run features, clustering, representative scores                | Durable records         |
 | Embedding service | Vector inference                                                   | Photo persistence       |
-| Qwen service      | Structured visual and text inference                               | Permanent photo storage |
+| Gemini API        | Structured visual and text inference                               | Permanent photo storage |
 
 ## 5. End-to-End Production Flow
 
@@ -137,7 +137,7 @@ flowchart TD
     N[Time-gap clustering]
     O[Visual, hash, time, GPS clustering]
     P[Select semantic images, maximum 15]
-    Q{Qwen pipeline configured?}
+    Q{Gemini API key configured?}
     R[Skip automatic moment creation]
     S[Describe each selected image]
     T[Persist structured descriptions]
@@ -338,9 +338,9 @@ sequenceDiagram
     autonumber
     participant Moments as Moment service
     participant Media as Media volume
-    participant Vision as Qwen3-VL
+    participant Vision as Gemini vision model
     participant DB as PostgreSQL
-    participant Text as Qwen3 text model
+    participant Text as Gemini text model
 
     loop each selected semantic image, maximum 15
         Moments->>Media: Read selected image
@@ -525,9 +525,10 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 | `ENV_MOMENTS_CV_WORKER`       | empty         | Uses temporal clustering                                |
 | `ENV_MOMENTS_EMBEDDING_URL`   | empty         | Skips embeddings; CV falls back to histogram similarity |
 | `ENV_MOMENTS_EMBEDDING_MODEL` | `siglip`      | Sent to the embedding provider                          |
-| `ENV_MOMENTS_QWEN_URL`        | empty         | Automatic moment creation is skipped                    |
-| `ENV_MOMENTS_QWEN_MODEL`      | `qwen3-vl:4b` | Vision model identifier                                 |
-| `ENV_MOMENTS_QWEN_TEXT_MODEL` | `qwen3:4b`    | Text synthesis model identifier                         |
+| `ENV_MOMENTS_GEMINI_API_KEY`   | empty                                      | Automatic moment creation is skipped                    |
+| `ENV_MOMENTS_GEMINI_URL`       | Google Gemini API                           | Gemini API base URL                                     |
+| `ENV_MOMENTS_GEMINI_MODEL`     | `gemini-3.5-flash-lite`                     | Vision model identifier                                 |
+| `ENV_MOMENTS_GEMINI_TEXT_MODEL`| `gemini-3.5-flash-lite`                     | Text synthesis model identifier                         |
 
 ### Fixed algorithm values
 
@@ -558,8 +559,8 @@ These values are currently compile-time constants:
 - Verify `/app/moments-cv-worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
 - Ensure the worker can read the same media paths as the server.
 - Deploy the embedding endpoint before setting `ENV_MOMENTS_EMBEDDING_URL`.
-- Pull both the vision and text Qwen models.
-- Confirm the server can reach model services over a private network.
+- Configure a restricted paid-tier Gemini API key.
+- Confirm the server can reach the Gemini API over HTTPS.
 - Run one manual generation request before relying on the weekly scheduler.
 
 ### Security and privacy
@@ -568,7 +569,7 @@ These values are currently compile-time constants:
 - Set `ENV_TRUSTED_PROXIES` only to known proxy CIDRs.
 - Restrict CORS to deployed frontend origins.
 - Replace all example credentials and tunnel tokens.
-- Keep inference services private; do not expose Ollama directly to the public internet.
+- Keep the Gemini API key out of logs, source control, and client applications.
 - Treat thumbnails, embeddings, and descriptions as personal data.
 - If inference leaves the host, define deletion, retention, and audit policies.
 - Do not log image payloads, credentials, TOTP secrets, or raw model requests.
@@ -696,7 +697,7 @@ go test -tags opencv ./app/processing ./app/db ./app/moments ./cmd/moments-cv-wo
 ### Production hardening
 
 1. Package the OpenCV worker and required native libraries in a production image or dedicated worker image.
-2. Pull and health-check both configured Qwen models in deployment manifests.
+2. Add a startup check for Gemini configuration without sending a photo.
 3. Add a durable queue for image descriptions and text synthesis.
 4. Add deterministic moment metadata when AI is disabled.
 5. Add metrics, traces, scheduler-run records, and operational dashboards.

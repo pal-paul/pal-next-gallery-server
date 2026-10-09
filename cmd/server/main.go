@@ -43,34 +43,35 @@ type Environment struct {
 	Mode string `env:"ENV_GIN_MODE,default=release"`
 	Port string `env:"ENV_PORT,default=8081"`
 
-	DatabaseURL           string `env:"ENV_DATABASE_URL"`
-	AdminUsername         string `env:"ENV_ADMIN_USERNAME"`
-	AdminPassword         string `env:"ENV_ADMIN_PASSWORD"`
-	AdminConfig           string `env:"ENV_ADMIN_CONFIG,default=YES"`
-	WebDir                string `env:"ENV_WEB_DIR,default=./web/dist"`
-	MediaDir              string `env:"ENV_MEDIA_DIR,default=./vol/medias"`
-	TmpDir                string `env:"ENV_TMP_DIR,default=./vol/tmp"`
-	MaxUploadSize         int64  `env:"ENV_MAX_UPLOAD_SIZE_BYTES,default=107374182400"`
-	MaxPendingSize        int64  `env:"ENV_MAX_PENDING_UPLOAD_BYTES_PER_USER,default=107374182400"`
-	MaxStorageSize        int64  `env:"ENV_MAX_STORAGE_BYTES_PER_USER,default=1099511627776"`
-	MinDiskFree           int64  `env:"ENV_MIN_DISK_FREE_BYTES,default=2147483648"`
-	MaxActive             int    `env:"ENV_MAX_ACTIVE_UPLOADS_PER_USER,default=10"`
-	HTTPReadTimeout       string `env:"ENV_HTTP_READ_TIMEOUT,default=5m"`
-	CleanupInterval       string `env:"ENV_CLEANUP_INTERVAL,default=1h"`
-	UploadRetention       string `env:"ENV_UPLOAD_RETENTION,default=168h"`
-	AllowedOrigins        string `env:"ENV_CORS_ALLOWED_ORIGINS,default=http://localhost:3000"`
-	TrustedProxies        string `env:"ENV_TRUSTED_PROXIES"`
-	Issuer                string `env:"ENV_ISSUER,default=issuer.palpaul.com"`
-	AutoAlbumRunAt        string `env:"ENV_AUTO_ALBUM_RUN_AT,default=02:00"`
-	AutoAlbumZone         string `env:"ENV_AUTO_ALBUM_TIMEZONE,default=Local"`
-	MomentsInterval       string `env:"ENV_MOMENTS_INTERVAL,default=168h"`
-	MomentsCVWorker       string `env:"ENV_MOMENTS_CV_WORKER"`
-	MomentsQwenURL        string `env:"ENV_MOMENTS_QWEN_URL"`
-	MomentsQwenModel      string `env:"ENV_MOMENTS_QWEN_MODEL,default=qwen3-vl:4b"`
-	MomentsQwenTextModel  string `env:"ENV_MOMENTS_QWEN_TEXT_MODEL,default=qwen3:4b"`
-	MomentsEmbeddingURL   string `env:"ENV_MOMENTS_EMBEDDING_URL"`
-	MomentsEmbeddingModel string `env:"ENV_MOMENTS_EMBEDDING_MODEL,default=siglip"`
-	NASImportPath         string `env:"NAS_IMPORT_PATH"`
+	DatabaseURL            string `env:"ENV_DATABASE_URL"`
+	AdminUsername          string `env:"ENV_ADMIN_USERNAME"`
+	AdminPassword          string `env:"ENV_ADMIN_PASSWORD"`
+	AdminConfig            string `env:"ENV_ADMIN_CONFIG,default=YES"`
+	WebDir                 string `env:"ENV_WEB_DIR,default=./web/dist"`
+	MediaDir               string `env:"ENV_MEDIA_DIR,default=./vol/medias"`
+	TmpDir                 string `env:"ENV_TMP_DIR,default=./vol/tmp"`
+	MaxUploadSize          int64  `env:"ENV_MAX_UPLOAD_SIZE_BYTES,default=107374182400"`
+	MaxPendingSize         int64  `env:"ENV_MAX_PENDING_UPLOAD_BYTES_PER_USER,default=107374182400"`
+	MaxStorageSize         int64  `env:"ENV_MAX_STORAGE_BYTES_PER_USER,default=1099511627776"`
+	MinDiskFree            int64  `env:"ENV_MIN_DISK_FREE_BYTES,default=2147483648"`
+	MaxActive              int    `env:"ENV_MAX_ACTIVE_UPLOADS_PER_USER,default=10"`
+	HTTPReadTimeout        string `env:"ENV_HTTP_READ_TIMEOUT,default=5m"`
+	CleanupInterval        string `env:"ENV_CLEANUP_INTERVAL,default=1h"`
+	UploadRetention        string `env:"ENV_UPLOAD_RETENTION,default=168h"`
+	AllowedOrigins         string `env:"ENV_CORS_ALLOWED_ORIGINS,default=http://localhost:3000"`
+	TrustedProxies         string `env:"ENV_TRUSTED_PROXIES"`
+	Issuer                 string `env:"ENV_ISSUER,default=issuer.palpaul.com"`
+	AutoAlbumRunAt         string `env:"ENV_AUTO_ALBUM_RUN_AT,default=02:00"`
+	AutoAlbumZone          string `env:"ENV_AUTO_ALBUM_TIMEZONE,default=Local"`
+	MomentsInterval        string `env:"ENV_MOMENTS_INTERVAL,default=168h"`
+	MomentsCVWorker        string `env:"ENV_MOMENTS_CV_WORKER"`
+	MomentsGeminiURL       string `env:"ENV_MOMENTS_GEMINI_URL,default=https://generativelanguage.googleapis.com/v1beta"`
+	MomentsGeminiAPIKey    string `env:"ENV_MOMENTS_GEMINI_API_KEY"`
+	MomentsGeminiModel     string `env:"ENV_MOMENTS_GEMINI_MODEL,default=gemini-3.5-flash-lite"`
+	MomentsGeminiTextModel string `env:"ENV_MOMENTS_GEMINI_TEXT_MODEL,default=gemini-3.5-flash-lite"`
+	MomentsEmbeddingURL    string `env:"ENV_MOMENTS_EMBEDDING_URL"`
+	MomentsEmbeddingModel  string `env:"ENV_MOMENTS_EMBEDDING_MODEL,default=siglip"`
+	NASImportPath          string `env:"NAS_IMPORT_PATH"`
 }
 
 // Initializing environment variables
@@ -170,14 +171,14 @@ func run() error {
 		momentOptions = append(momentOptions, moments.WithClusterer(moments.NewCommandClusterer(worker, envVar.MediaDir)))
 		slog.Info("visual moment clustering enabled", "worker", worker)
 	}
-	if endpoint := strings.TrimSpace(envVar.MomentsQwenURL); endpoint != "" {
-		enricher, err := moments.NewQwenPipeline(endpoint, envVar.MomentsQwenModel, envVar.MomentsQwenTextModel, envVar.MediaDir)
+	if apiKey := strings.TrimSpace(envVar.MomentsGeminiAPIKey); apiKey != "" {
+		enricher, err := moments.NewGeminiPipeline(envVar.MomentsGeminiURL, apiKey, envVar.MomentsGeminiModel, envVar.MomentsGeminiTextModel, envVar.MediaDir)
 		if err != nil {
 			return fmt.Errorf("configure moment metadata enrichment: %w", err)
 		}
 		momentOptions = append(momentOptions, moments.WithImageDescriber(enricher), moments.WithMetadataSynthesizer(enricher))
-		slog.Info("moment metadata enrichment enabled", "vision_model", envVar.MomentsQwenModel,
-			"text_model", envVar.MomentsQwenTextModel)
+		slog.Info("moment metadata enrichment enabled", "provider", "gemini", "vision_model", envVar.MomentsGeminiModel,
+			"text_model", envVar.MomentsGeminiTextModel)
 	}
 	momentsService := moments.New(database, momentOptions...)
 	operationsService, err := operations.New(database, uploaderService, envVar.MediaDir, envVar.TmpDir, envVar.MinDiskFree)

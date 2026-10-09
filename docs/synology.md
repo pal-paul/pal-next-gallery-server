@@ -17,7 +17,6 @@ account used by Container Manager:
 
 ```text
 /volume1/docker/next-gallery-server/postgres
-/volume1/docker/next-gallery-server/ollama
 /volume1/docker/next-gallery-server/backups
 /volume1/media/gallery
 /volume1/media/import
@@ -29,12 +28,9 @@ Synology may validate bind-mount sources before Compose processes
 uses a volume other than `volume1`, update every source path in the Compose
 file.
 
-The bundled vision and text models require roughly 8 GB for model storage and
-additional memory while running. Allow at least 8 GB of available RAM for a
-CPU-only NAS deployment. On smaller systems, remove the `ollama` and both
-`ollama-*-model` services, remove their `server.depends_on` entries, and point
-`ENV_MOMENTS_QWEN_URL` at an Ollama instance running on another trusted
-machine.
+Moment descriptions and titles use the hosted Gemini API, so the NAS does not
+need local model storage or inference memory. Outbound HTTPS access to
+`generativelanguage.googleapis.com` is required when enrichment is enabled.
 
 ### 2. Configure the project
 
@@ -43,6 +39,11 @@ PostgreSQL username and password in `ENV_DATABASE_URL` must match the values on
 the `postgres` service. Use a bootstrap password of at least 12 characters for
 `ENV_ADMIN_PASSWORD`. Set `ENV_ISSUER` to the name that should appear in the
 authenticator application.
+
+Replace `ENV_MOMENTS_GEMINI_API_KEY` with a paid-tier Gemini API key. Paid-tier
+requests are not used to improve Google's products; selected photos are still
+sent to Google for processing. Leave the value empty to disable automatic
+Moment enrichment.
 
 Set `ENV_CORS_ALLOWED_ORIGINS` to the exact browser origin, including scheme and
 port but excluding the path and trailing slash. For example:
@@ -59,10 +60,7 @@ include `null` under normal operation.
 
 In DSM, open **Container Manager > Project > Create**, choose the Compose file,
 and use `next-gallery-server` as the project name. Review the generated project
-and start it. On the first deployment, `ollama-vision-model` and
-`ollama-text-model` download `qwen3-vl:4b` and `qwen3:4b`; both jobs must finish
-before `server` starts. Wait for `postgres`, `ollama`, and `server` to report
-healthy and for both model jobs to exit successfully.
+and start it. Wait for `postgres` and `server` to report healthy.
 
 The Synology Compose file contains all settings and does not require a `.env`
 file. As an alternative, deploy it from SSH while in the repository directory:
@@ -76,12 +74,11 @@ The `server` service uses the release-managed `latest` image. Publish a new
 repository release containing the Moments implementation before deploying this
 configuration to a remote NAS; the image publishing workflow updates that tag.
 
-Verify that both models are installed and reachable from the application network:
+Verify that the server has outbound connectivity to the Gemini API:
 
 ```sh
-docker compose -f build/compose.synology.yaml exec ollama ollama list
 docker compose -f build/compose.synology.yaml exec server \
-  wget -qO- http://ollama:11434/api/tags
+  wget -qO- https://generativelanguage.googleapis.com/
 ```
 
 ### 4. Complete initial setup
@@ -129,17 +126,15 @@ user.
 ## Moments
 
 Moment generation considers unassigned, processed photos captured within the
-previous seven days. A group must contain at least three photos. Qwen receives
+previous seven days. A group must contain at least three photos. Gemini receives
 images sampled across the group and the Moment is created only when at least
 65% of the supplied photos support one shared description. Each photo can
 belong to only one Moment.
 
-The Synology Compose project runs Ollama only on its internal network and keeps
-model data under `/volume1/docker/next-gallery-server/ollama`. Ollama port
-`11434` is not published on the NAS host. Change `ENV_MOMENTS_INTERVAL` to
-control background generation; `168h` runs it weekly. The embedding endpoint is
-disabled by default; set `ENV_MOMENTS_EMBEDDING_URL` only when a compatible
-private SigLIP/CLIP service is available.
+Change `ENV_MOMENTS_INTERVAL` to control background generation; `168h` runs it
+weekly. The embedding endpoint is disabled by default; set
+`ENV_MOMENTS_EMBEDDING_URL` only when a compatible private SigLIP/CLIP service
+is available.
 
 ## Reverse proxy
 
@@ -252,7 +247,6 @@ Station or SSH, then redeploy the project:
 
 ```sh
 mkdir -p /volume1/docker/next-gallery-server/postgres
-mkdir -p /volume1/docker/next-gallery-server/ollama
 mkdir -p /volume1/media/gallery /volume1/media/import /volume1/media/tmp
 ```
 

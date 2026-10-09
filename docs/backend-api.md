@@ -357,7 +357,7 @@ select an album cover.
 Initial generation considers successfully processed photos captured within the
 previous seven days, falling back to upload time, then groups adjacent photos
 whose gap is at most 30 minutes. Groups must contain at least three photos.
-Qwen evaluates images sampled across each group and generates its title and
+Gemini evaluates images sampled across each group and generates its title and
 description; the group becomes a draft only when at least 65% of those images
 support one shared description. Already assigned photos are skipped on later
 runs, and the database prevents a photo from belonging to multiple Moments.
@@ -366,9 +366,9 @@ user choices.
 
 Background generation runs every 168 hours by default. Set
 `ENV_MOMENTS_INTERVAL` to another positive Go duration such as `24h` or `336h`.
-Set `ENV_MOMENTS_QWEN_URL` to the Ollama endpoint and
-`ENV_MOMENTS_QWEN_MODEL` to the installed vision model, such as
-`qwen3-vl:4b`.
+Set `ENV_MOMENTS_GEMINI_API_KEY` to enable enrichment. The vision and text
+models default to `gemini-3.5-flash-lite` and can be changed with
+`ENV_MOMENTS_GEMINI_MODEL` and `ENV_MOMENTS_GEMINI_TEXT_MODEL`.
 
 Create or update an album:
 

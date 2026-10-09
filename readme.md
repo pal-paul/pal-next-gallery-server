@@ -27,15 +27,18 @@ cp .env.example .env
 only by the one-time `/setup` form; they are never stored as an account. The
 bootstrap password must contain at least 12 characters.
 
-Start PostgreSQL, Ollama, the model initialization jobs, and the application:
+Set `ENV_MOMENTS_GEMINI_API_KEY` to a paid-tier Gemini API key to enable
+automatic Moment descriptions and titles. Leave it empty to run without AI
+enrichment.
+
+Start PostgreSQL and the application:
 
 ```bash
 docker compose --env-file .env -f build/compose.yaml up --build
 ```
 
-The first run downloads both Qwen models before the application starts. Allow
-roughly 8 GB for model storage and at least 8 GB of Docker memory for local
-inference. The OpenCV Moments worker is included in the application image.
+The OpenCV Moments worker is included in the application image. Selected photos
+are sent to Gemini only when Moment enrichment is enabled.
 
 The example configuration exposes the gallery and API at
 `http://127.0.0.1:8081`. Change `ENV_PORT` in `.env` if that port is occupied.
