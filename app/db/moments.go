@@ -160,9 +160,11 @@ func (store *Postgres) SetMomentCover(ctx context.Context, momentID, ownerID, me
 func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string) ([]moments.Candidate, error) {
 	rows, err := store.pool.Query(ctx, `SELECT media.upload_id, COALESCE(media.thumbnail_path, media.media_path),
 		COALESCE(exif.captured_at, media.created_at),
-		exif.latitude, exif.longitude
+		exif.latitude, exif.longitude, COALESCE(embedding.embedding, '{}'::DOUBLE PRECISION[])
 		FROM media_uploads media
 		LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id
+		LEFT JOIN LATERAL (SELECT stored.embedding FROM media_embeddings stored
+			WHERE stored.upload_id = media.upload_id ORDER BY stored.created_at DESC LIMIT 1) embedding ON TRUE
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $1
 		WHERE media.deleted_at IS NULL AND media.mime_type LIKE 'image/%'
 		AND (media.owner_id = $1 OR share.user_id IS NOT NULL)
@@ -170,6 +172,8 @@ func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string)
 		AND COALESCE(exif.captured_at, media.created_at) <= now()
 		AND EXISTS (SELECT 1 FROM media_processing_jobs job
 			WHERE job.upload_id = media.upload_id AND job.status = 'completed')
+		AND NOT EXISTS (SELECT 1 FROM media_duplicate_group_members duplicate
+			WHERE duplicate.upload_id = media.upload_id AND duplicate.is_primary = FALSE)
 		AND NOT EXISTS (SELECT 1 FROM moment_media member JOIN moments moment ON moment.id = member.moment_id
 			WHERE member.upload_id = media.upload_id AND moment.owner_id = $1)
 		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id`, ownerID)
@@ -180,12 +184,34 @@ func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string)
 	candidates := make([]moments.Candidate, 0)
 	for rows.Next() {
 		var candidate moments.Candidate
-		if err := rows.Scan(&candidate.ID, &candidate.SourcePath, &candidate.CapturedAt, &candidate.Latitude, &candidate.Longitude); err != nil {
+		if err := rows.Scan(&candidate.ID, &candidate.SourcePath, &candidate.CapturedAt, &candidate.Latitude,
+			&candidate.Longitude, &candidate.Embedding); err != nil {
 			return nil, err
 		}
 		candidates = append(candidates, candidate)
 	}
 	return candidates, rows.Err()
+}
+
+func (store *Postgres) SaveImageDescriptions(ctx context.Context, descriptions []moments.ImageDescription) error {
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	for _, description := range descriptions {
+		if _, err := transaction.Exec(ctx, `INSERT INTO media_image_descriptions
+			(upload_id, model, version, people, activities, location_type, objects, scene, weather, description)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (upload_id, model, version) DO UPDATE SET people = EXCLUDED.people,
+			activities = EXCLUDED.activities, location_type = EXCLUDED.location_type, objects = EXCLUDED.objects,
+			scene = EXCLUDED.scene, weather = EXCLUDED.weather, description = EXCLUDED.description, created_at = now()`,
+			description.MediaID, description.Model, description.Version, description.People, description.Activities,
+			description.LocationType, description.Objects, description.Scene, description.Weather, description.Description); err != nil {
+			return err
+		}
+	}
+	return transaction.Commit(ctx)
 }
 
 func (store *Postgres) CreateGeneratedMoment(ctx context.Context, moment moments.Moment, candidates []moments.Candidate) error {

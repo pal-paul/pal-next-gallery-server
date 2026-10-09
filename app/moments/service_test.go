@@ -14,11 +14,12 @@ import (
 )
 
 type testRepository struct {
-	owners     []string
-	candidates []Candidate
-	created    []Moment
-	groups     [][]Candidate
-	updated    Moment
+	owners       []string
+	candidates   []Candidate
+	created      []Moment
+	groups       [][]Candidate
+	updated      Moment
+	descriptions []ImageDescription
 }
 
 type testClusterer struct{ groups [][]Candidate }
@@ -31,6 +32,21 @@ type testEnricher struct{ confidence float64 }
 
 func (enricher testEnricher) Enrich(context.Context, Moment, []Candidate) (Metadata, error) {
 	return Metadata{Title: "A day by the water", Description: "Sunny outdoor photos.", Confidence: enricher.confidence}, nil
+}
+
+type testTwoStageEnricher struct {
+	described   []string
+	synthesized []ImageDescription
+}
+
+func (enricher *testTwoStageEnricher) Describe(_ context.Context, candidate Candidate) (ImageDescription, error) {
+	enricher.described = append(enricher.described, candidate.ID)
+	return ImageDescription{Model: "vision", Description: "Description of " + candidate.ID}, nil
+}
+
+func (enricher *testTwoStageEnricher) Synthesize(_ context.Context, _ Moment, descriptions []ImageDescription) (Metadata, error) {
+	enricher.synthesized = append(enricher.synthesized, descriptions...)
+	return Metadata{Title: "Synthesized title", Description: "Synthesized description", Confidence: 0.9}, nil
 }
 
 func (repository *testRepository) ListMomentOwners(context.Context) ([]string, error) {
@@ -58,6 +74,10 @@ func (repository *testRepository) SetMomentCover(context.Context, string, string
 }
 func (repository *testRepository) ListMomentCandidates(context.Context, string) ([]Candidate, error) {
 	return repository.candidates, nil
+}
+func (repository *testRepository) SaveImageDescriptions(_ context.Context, descriptions []ImageDescription) error {
+	repository.descriptions = append(repository.descriptions, descriptions...)
+	return nil
 }
 func (repository *testRepository) CreateGeneratedMoment(_ context.Context, moment Moment, candidates []Candidate) error {
 	repository.created = append(repository.created, moment)
@@ -152,6 +172,40 @@ func TestGenerateUsesVisualRepresentativeAndEnrichment(t *testing.T) {
 	created := repository.created[0]
 	if created.CoverMediaID != "sharp" || created.Title != "A day by the water" || created.Description != "Sunny outdoor photos." {
 		t.Fatalf("unexpected enriched moment: %#v", created)
+	}
+}
+
+func TestGenerateDescribesPersistsAndSynthesizesSelectedImages(t *testing.T) {
+	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
+	group := []Candidate{
+		{ID: "first", CapturedAt: base, Representative: true},
+		{ID: "second", CapturedAt: base.Add(time.Minute), Representative: true},
+		{ID: "third", CapturedAt: base.Add(2 * time.Minute), Representative: true},
+	}
+	repository := &testRepository{candidates: group}
+	enricher := &testTwoStageEnricher{}
+	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{group}}),
+		WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+	router := testRouterWithService(service)
+	request := httptest.NewRequest(http.MethodPost, "/moments/generate", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || response.Body.String() != `{"created":1}` {
+		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	}
+	if len(enricher.described) != 3 || len(repository.descriptions) != 3 || len(enricher.synthesized) != 3 {
+		t.Fatalf("unexpected pipeline calls: described=%v persisted=%v synthesized=%v",
+			enricher.described, repository.descriptions, enricher.synthesized)
+	}
+	for index, description := range repository.descriptions {
+		if description.MediaID != group[index].ID {
+			t.Fatalf("description %d has media ID %q", index, description.MediaID)
+		}
+	}
+	if repository.created[0].Title != "Synthesized title" || repository.created[0].Description != "Synthesized description" {
+		t.Fatalf("unexpected synthesized moment: %#v", repository.created[0])
 	}
 }
 

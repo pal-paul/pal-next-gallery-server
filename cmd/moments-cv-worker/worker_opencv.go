@@ -19,11 +19,18 @@ import (
 
 const similarityThreshold = 0.62
 
+type weightedEdge struct {
+	left   int
+	right  int
+	weight float64
+}
+
 type imageFeatures struct {
 	candidate moments.Candidate
 	histogram [48]float64
 	hash      uint64
 	sharpness float64
+	exposure  float64
 }
 
 func run() error {
@@ -63,6 +70,7 @@ func extractFeatures(candidate moments.Candidate) (imageFeatures, error) {
 		histogram: colorHistogram(color.ToBytes()),
 		hash:      differenceHash(hashImage.ToBytes()),
 		sharpness: edgeSharpness(gray.ToBytes(), gray.Cols(), gray.Rows()),
+		exposure:  exposureQuality(gray.ToBytes()),
 	}, nil
 }
 
@@ -109,18 +117,28 @@ func edgeSharpness(pixels []byte, width, height int) float64 {
 	return total / float64((width-1)*(height-1)*2*255)
 }
 
-func cluster(features []imageFeatures) [][]moments.Candidate {
-	parent := make([]int, len(features))
-	for index := range parent {
-		parent[index] = index
+func exposureQuality(pixels []byte) float64 {
+	if len(pixels) == 0 {
+		return 0
 	}
-	for left := range features {
-		for right := left + 1; right < len(features); right++ {
-			if similarity(features[left], features[right]) >= similarityThreshold {
-				join(parent, left, right)
-			}
+	var total float64
+	clipped := 0
+	for _, pixel := range pixels {
+		total += float64(pixel) / 255
+		if pixel <= 5 || pixel >= 250 {
+			clipped++
 		}
 	}
+	mean := total / float64(len(pixels))
+	balanced := 1 - math.Min(1, math.Abs(mean-0.5)*2)
+	return balanced * (1 - float64(clipped)/float64(len(pixels)))
+}
+
+func cluster(features []imageFeatures) [][]moments.Candidate {
+	if len(features) == 0 {
+		return nil
+	}
+	parent := densityComponents(features)
 	components := make(map[int][]int)
 	for index := range features {
 		root := find(parent, index)
@@ -136,15 +154,91 @@ func cluster(features []imageFeatures) [][]moments.Candidate {
 	return groups
 }
 
+func densityComponents(features []imageFeatures) []int {
+	distances := make([][]float64, len(features))
+	coreDistances := make([]float64, len(features))
+	for left := range features {
+		distances[left] = make([]float64, len(features))
+		neighbors := make([]float64, 0, len(features)-1)
+		for right := range features {
+			if left == right {
+				continue
+			}
+			distance := 1 - similarity(features[left], features[right])
+			distances[left][right] = distance
+			neighbors = append(neighbors, distance)
+		}
+		sort.Float64s(neighbors)
+		if len(neighbors) > 0 {
+			coreDistances[left] = neighbors[min(1, len(neighbors)-1)]
+		}
+	}
+	edges := make([]weightedEdge, 0, len(features)*(len(features)-1)/2)
+	for left := range features {
+		for right := left + 1; right < len(features); right++ {
+			edges = append(edges, weightedEdge{left: left, right: right,
+				weight: max(distances[left][right], max(coreDistances[left], coreDistances[right]))})
+		}
+	}
+	sort.Slice(edges, func(left, right int) bool { return edges[left].weight < edges[right].weight })
+	treeParent := newParents(len(features))
+	minimumSpanningTree := make([]weightedEdge, 0, max(0, len(features)-1))
+	for _, edge := range edges {
+		if find(treeParent, edge.left) == find(treeParent, edge.right) {
+			continue
+		}
+		join(treeParent, edge.left, edge.right)
+		minimumSpanningTree = append(minimumSpanningTree, edge)
+	}
+	parent := make([]int, len(features))
+	for index := range parent {
+		parent[index] = index
+	}
+	for _, edge := range minimumSpanningTree {
+		if edge.weight <= 1-similarityThreshold {
+			join(parent, edge.left, edge.right)
+		}
+	}
+	return parent
+}
+
+func newParents(size int) []int {
+	parents := make([]int, size)
+	for index := range parents {
+		parents[index] = index
+	}
+	return parents
+}
+
 func similarity(left, right imageFeatures) float64 {
 	var histogramIntersection float64
 	for index := range left.histogram {
 		histogramIntersection += math.Min(left.histogram[index], right.histogram[index])
 	}
 	hashSimilarity := 1 - float64(bits.OnesCount64(left.hash^right.hash))/64
+	visualSimilarity := histogramIntersection
+	if embeddingSimilarity, ok := cosineSimilarity(left.candidate.Embedding, right.candidate.Embedding); ok {
+		visualSimilarity = embeddingSimilarity
+	}
 	timeSimilarity := proximity(left.candidate.CapturedAt, right.candidate.CapturedAt, 6*time.Hour)
 	locationSimilarity := locationProximity(left.candidate, right.candidate)
-	return 0.55*histogramIntersection + 0.20*hashSimilarity + 0.15*timeSimilarity + 0.10*locationSimilarity
+	return 0.55*visualSimilarity + 0.20*hashSimilarity + 0.15*timeSimilarity + 0.10*locationSimilarity
+}
+
+func cosineSimilarity(left, right []float64) (float64, bool) {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0, false
+	}
+	var dot, leftMagnitude, rightMagnitude float64
+	for index := range left {
+		dot += left[index] * right[index]
+		leftMagnitude += left[index] * left[index]
+		rightMagnitude += right[index] * right[index]
+	}
+	if leftMagnitude == 0 || rightMagnitude == 0 {
+		return 0, false
+	}
+	return (dot/math.Sqrt(leftMagnitude*rightMagnitude) + 1) / 2, true
 }
 
 func proximity(left, right time.Time, limit time.Duration) float64 {
@@ -200,18 +294,11 @@ func scoreRepresentatives(features []imageFeatures, indexes []int) []moments.Can
 		}
 		candidate := features[index].candidate
 		candidate.SimilarityScore = centrality
-		candidate.RepresentativeScore = 0.55*centrality + 0.45*sharpness
+		candidate.RepresentativeScore = 0.45*centrality + 0.35*sharpness + 0.20*features[index].exposure
 		group = append(group, candidate)
 	}
 	representativeCount := representativeTarget(len(group))
-	ranked := append([]moments.Candidate(nil), group...)
-	sort.Slice(ranked, func(left, right int) bool {
-		return ranked[left].RepresentativeScore > ranked[right].RepresentativeScore
-	})
-	representatives := make(map[string]struct{}, representativeCount)
-	for _, candidate := range ranked[:representativeCount] {
-		representatives[candidate.ID] = struct{}{}
-	}
+	representatives := selectDiverseRepresentatives(features, indexes, group, representativeCount)
 	for index := range group {
 		_, group[index].Representative = representatives[group[index].ID]
 	}
@@ -219,6 +306,36 @@ func scoreRepresentatives(features []imageFeatures, indexes []int) []moments.Can
 		return group[left].CapturedAt.Before(group[right].CapturedAt)
 	})
 	return group
+}
+
+func selectDiverseRepresentatives(features []imageFeatures, indexes []int, group []moments.Candidate, count int) map[string]struct{} {
+	selected := make(map[string]struct{}, count)
+	selectedIndexes := make([]int, 0, count)
+	for len(selected) < count {
+		bestGroupIndex := -1
+		bestSelectionScore := -1.0
+		for groupIndex, candidate := range group {
+			if _, exists := selected[candidate.ID]; exists {
+				continue
+			}
+			diversity := 1.0
+			for _, selectedIndex := range selectedIndexes {
+				diversity = math.Min(diversity, 1-similarity(features[indexes[groupIndex]], features[selectedIndex]))
+			}
+			selectionScore := 0.65*candidate.RepresentativeScore + 0.35*diversity
+			if selectionScore > bestSelectionScore ||
+				(selectionScore == bestSelectionScore && (bestGroupIndex < 0 || candidate.ID < group[bestGroupIndex].ID)) {
+				bestGroupIndex = groupIndex
+				bestSelectionScore = selectionScore
+			}
+		}
+		if bestGroupIndex < 0 {
+			break
+		}
+		selected[group[bestGroupIndex].ID] = struct{}{}
+		selectedIndexes = append(selectedIndexes, indexes[bestGroupIndex])
+	}
+	return selected
 }
 
 func representativeTarget(groupSize int) int {

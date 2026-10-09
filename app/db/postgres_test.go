@@ -68,3 +68,68 @@ func TestSchemaCreatesMomentsSeparatelyFromAlbums(t *testing.T) {
 		}
 	}
 }
+
+func TestSchemaPersistsPreprocessingAnalysis(t *testing.T) {
+	for _, statement := range []string{
+		"camera_make TEXT NOT NULL DEFAULT ''",
+		"camera_model TEXT NOT NULL DEFAULT ''",
+		"orientation TEXT NOT NULL DEFAULT ''",
+		"perceptual_hash TEXT NOT NULL DEFAULT ''",
+		"media_exif_perceptual_hash_idx",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("preprocessing schema does not contain %q", statement)
+		}
+	}
+}
+
+func TestSchemaCreatesNearDuplicateGroups(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS media_duplicate_groups",
+		"CREATE TABLE IF NOT EXISTS media_duplicate_group_members",
+		"hamming_distance INTEGER NOT NULL",
+		"media_duplicate_primary_idx",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("duplicate schema does not contain %q", statement)
+		}
+	}
+}
+
+func TestDifferenceHashDistance(t *testing.T) {
+	distance, err := differenceHashDistance("0000000000000000", "0000000000000007")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if distance != 3 {
+		t.Fatalf("unexpected Hamming distance: %d", distance)
+	}
+}
+
+func TestSchemaPersistsVersionedImageEmbeddings(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS media_embeddings",
+		"embedding DOUBLE PRECISION[] NOT NULL",
+		"PRIMARY KEY (upload_id, model, version)",
+		"array_length(embedding, 1) = dimensions",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("embedding schema does not contain %q", statement)
+		}
+	}
+}
+
+func TestSchemaPersistsStructuredImageDescriptions(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS media_image_descriptions",
+		"people TEXT[] NOT NULL",
+		"activities TEXT[] NOT NULL",
+		"location_type TEXT NOT NULL",
+		"weather TEXT NOT NULL",
+		"PRIMARY KEY (upload_id, model, version)",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("image description schema does not contain %q", statement)
+		}
+	}
+}

@@ -3,6 +3,11 @@ package processing
 import (
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -95,5 +100,41 @@ func TestProcessOnceRequeuesCompletionFailure(t *testing.T) {
 	}
 	if !repository.completed || !repository.failed {
 		t.Fatalf("completion state: completed=%t failed=%t", repository.completed, repository.failed)
+	}
+}
+
+func TestFirstTagReturnsFirstNonEmptyValue(t *testing.T) {
+	tags := map[string]string{"make": " ", "camera_make": "Fujifilm", "model": "X-T5"}
+	if got := firstTag(tags, "make", "camera_make"); got != "Fujifilm" {
+		t.Fatalf("unexpected camera make: %q", got)
+	}
+}
+
+func TestDifferenceHashFileDetectsHorizontalGradient(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gradient.jpg")
+	gradient := image.NewGray(image.Rect(0, 0, 90, 80))
+	for y := 0; y < gradient.Bounds().Dy(); y++ {
+		for x := 0; x < gradient.Bounds().Dx(); x++ {
+			gradient.SetGray(x, y, color.Gray{Y: uint8(255 - x*255/gradient.Bounds().Dx())})
+		}
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(file, gradient, &jpeg.Options{Quality: 100}); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	hash, err := differenceHashFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != "ffffffffffffffff" {
+		t.Fatalf("unexpected difference hash: %s", hash)
 	}
 }

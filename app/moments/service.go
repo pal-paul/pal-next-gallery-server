@@ -62,6 +62,7 @@ type Candidate struct {
 	SimilarityScore     float64   `json:"similarityScore,omitempty"`
 	RepresentativeScore float64   `json:"representativeScore,omitempty"`
 	Representative      bool      `json:"representative,omitempty"`
+	Embedding           []float64 `json:"embedding,omitempty"`
 }
 
 type Repository interface {
@@ -74,13 +75,16 @@ type Repository interface {
 	RemoveMomentMedia(context.Context, string, string, string) error
 	SetMomentCover(context.Context, string, string, string) error
 	ListMomentCandidates(context.Context, string) ([]Candidate, error)
+	SaveImageDescriptions(context.Context, []ImageDescription) error
 	CreateGeneratedMoment(context.Context, Moment, []Candidate) error
 }
 
 type Service struct {
-	repository Repository
-	clusterer  Clusterer
-	enricher   Enricher
+	repository  Repository
+	clusterer   Clusterer
+	enricher    Enricher
+	describer   ImageDescriber
+	synthesizer MetadataSynthesizer
 }
 
 func New(repository Repository, options ...Option) *Service {
@@ -208,11 +212,11 @@ func (service *Service) generateForOwner(ctx context.Context, ownerID string) (i
 	}
 	created := 0
 	for _, group := range groups {
-		if len(group) < MinimumMomentImages || service.enricher == nil {
+		if len(group) < MinimumMomentImages || (service.enricher == nil && (service.describer == nil || service.synthesizer == nil)) {
 			continue
 		}
 		moment := generatedMoment(ownerID, group)
-		metadata, err := service.enricher.Enrich(ctx, moment, semanticCandidates(group))
+		metadata, err := service.enrichMoment(ctx, moment, semanticCandidates(group))
 		if err != nil {
 			slog.WarnContext(ctx, "moment metadata enrichment failed", "owner_id", ownerID, "error", err)
 			continue
@@ -232,6 +236,25 @@ func (service *Service) generateForOwner(ctx context.Context, ownerID string) (i
 		created++
 	}
 	return created, nil
+}
+
+func (service *Service) enrichMoment(ctx context.Context, moment Moment, candidates []Candidate) (Metadata, error) {
+	if service.describer == nil || service.synthesizer == nil {
+		return service.enricher.Enrich(ctx, moment, candidates)
+	}
+	descriptions := make([]ImageDescription, 0, len(candidates))
+	for _, candidate := range candidates {
+		description, err := service.describer.Describe(ctx, candidate)
+		if err != nil {
+			return Metadata{}, err
+		}
+		description.MediaID = candidate.ID
+		descriptions = append(descriptions, description)
+	}
+	if err := service.repository.SaveImageDescriptions(ctx, descriptions); err != nil {
+		return Metadata{}, err
+	}
+	return service.synthesizer.Synthesize(ctx, moment, descriptions)
 }
 
 func recentCandidates(candidates []Candidate, now time.Time, window time.Duration) []Candidate {

@@ -1,1733 +1,735 @@
-# Dynamic Personal Photo moments Generator — Requirements
+# Photo Moments: Production Architecture and Flow
 
-## 1. Overview
+## 1. Purpose
 
-Build a **generic personal photo organization application** that automatically turns a user's everyday photos into meaningful momentss.
+This document describes how photo moments are created, stored, operated, and scaled in production. It reflects the server implementation validated on **2026-10-09**.
 
-The application is intended for photos taken with mobile phones, digital cameras, mirrorless/DSLR cameras, action cameras, scanned/imported photos, and other personal photo sources.
+The pipeline is local-first:
 
-The primary design principle is:
+- Original media remains in the configured media filesystem.
+- PostgreSQL stores metadata, processing state, duplicate groups, embeddings, image descriptions, moments, and memberships.
+- Deterministic processing handles metadata, hashing, duplicate detection, clustering, and representative selection.
+- Optional model services add image embeddings and semantic descriptions.
+- No stage deletes or modifies an original media file.
 
-> **Use traditional computer vision and deterministic algorithms for the majority of processing, and use AI only where semantic understanding provides clear additional value.**
+The generated domain object is a **moment**. Albums are a separate curated or calendar-based feature.
 
-The application should be suitable for privacy-conscious users who may want to run the complete system locally on a NAS or personal server.
+## 2. Production Status
 
----
+| Capability | Status | Production behavior | Follow-up |
+| --- | --- | --- | --- |
+| Resumable upload | Implemented | Authenticated chunked uploads are assembled, SHA-256 verified, and persisted | None for the moment pipeline |
+| Processing queue | Implemented | PostgreSQL queue with atomic claims, stale-claim recovery, retries, and manual retry | Add metrics and dead-letter alerting |
+| Metadata and thumbnails | Implemented | `ffprobe` extracts technical metadata and `ffmpeg` creates bounded JPEG thumbnails | Physically rotate pixels if a consumer ignores orientation metadata |
+| Exact duplicates | Implemented | Owner-scoped SHA-256 checks reject duplicate upload creation | Add a retain-and-review mode if desired |
+| Near duplicates | Implemented | Persisted dHash values create owner-scoped groups at Hamming distance `<= 5` | Add duplicate review UI |
+| Image embeddings | Optional | An HTTP provider returns versioned vectors stored in PostgreSQL | Add an ANN index when bounded scans are insufficient |
+| Visual clustering | Optional | An external OpenCV executable performs similarity scoring and mutual-reachability MST clustering | Package the worker in the production image; consider canonical HDBSCAN if needed |
+| Temporal clustering fallback | Implemented | Without the OpenCV worker, candidates are split at 30-minute gaps | This is less accurate than the full profile |
+| Representative selection | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images | Tune weights against labeled collections |
+| Structured image descriptions | Optional | Qwen-VL describes each selected semantic image and results are persisted | Add explicit prompt/schema version values |
+| Metadata synthesis | Optional | A separate Qwen3 text request creates title, description, and confidence | Add independent retryable AI jobs |
+| Moment persistence | Implemented | Advisory locking and one transaction prevent duplicate ownership assignment | None |
+| Deterministic moment creation without AI | Gap | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured | Add deterministic title/description fallback |
 
-## 2. Goals
+### Important deployment reality
 
-### Primary goals
+The generic Docker image currently builds only `cmd/server`. The OpenCV worker must be built separately with `-tags opencv` and exposed through `ENV_MOMENTS_CV_WORKER` before the full visual pipeline is active.
 
-1. Import photos from one or more sources.
-2. Detect exact and near-duplicate photos.
-3. Extract technical and visual features.
-4. Identify visually and temporally related photos.
-5. Automatically group photos into moments candidates.
-6. Select representative/cover photos.
-7. Generate useful moments titles and descriptions.
-8. Preserve original photos.
-9. Process only new or changed photos during normal runs.
-10. Support scheduled/background processing.
-11. Minimize data sent to external AI services.
-12. Allow completely local processing where possible.
+The Synology Compose file currently pulls `qwen3-vl:4b`, but the two-stage pipeline also expects the text model configured by `ENV_MOMENTS_QWEN_TEXT_MODEL` (default `qwen3:4b`). The embedding provider is a separate HTTP service and is not included in either Compose file.
 
-### Secondary goals
+## 3. Production Profiles
 
-Support future momentss around:
+### 3.1 Core profile
 
-- Trips and vacations
-- Family events
-- Birthdays and celebrations
-- Nature and outdoor photography
-- Food and restaurants
-- Pets
-- Hobbies
-- Daily-life photos
-- Seasons
-- Camera/photo-shoot sessions
-- Locations
-- Dates
-- User-created collections
+Components:
 
----
-
-## 3. Non-Goals
-
-The initial version does not attempt to:
-
-- Replace professional photo-editing software.
-- Automatically modify original photos.
-- Provide professional RAW development.
-- Require facial recognition.
-- Automatically publish photos to social media.
-- Upload the entire photo library to a third-party AI service.
-- Require AI for basic photo organization.
-
-AI is an optional enhancement, not a hard dependency.
-
----
-
-## 4. High-Level Architecture
-
-```text
-                    ┌──────────────────────────┐
-                    │       Photo Sources      │
-                    │                          │
-                    │ Phone / Camera / SD Card │
-                    │ NAS Folder / Import      │
-                    └────────────┬─────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │   Photo Ingestion        │
-                    │                          │
-                    │ File discovery           │
-                    │ Metadata extraction      │
-                    │ Hash calculation         │
-                    │ Validation                │
-                    └────────────┬─────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │    Image Analysis        │
-                    │                          │
-                    │ OpenCV / Go              │
-                    │ pHash                    │
-                    │ Dimensions               │
-                    │ Color / brightness       │
-                    │ Visual features          │
-                    └────────────┬─────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │ Duplicate Detection      │
-                    │ Exact + near duplicates  │
-                    └────────────┬─────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │ Photo Grouping            │
-                    │ Similarity + clustering   │
-                    │ Time + optional location │
-                    └────────────┬─────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │ moments Generator           │
-                    │ Representative photos    │
-                    │ Deterministic metadata    │
-                    └────────────┬─────────────┘
-                                 │
-                           Optional AI
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │ Vision Language Model    │
-                    │ Title / description      │
-                    │ Semantic attributes      │
-                    └────────────┬─────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────┐
-                    │ PostgreSQL               │
-                    │ Photos / features        │
-                    │ momentss / membership      │
-                    │ AI metadata              │
-                    └──────────────────────────┘
-```
-
----
-
-## 5. Core Design Principle
-
-Use a layered architecture.
-
-### Layer 1 — File and metadata processing
-
-No AI:
-
-- File discovery
-- EXIF extraction
-- Date/time
-- Camera information
-- GPS metadata
-- Image dimensions
-- File hash
-
-### Layer 2 — Computer vision
-
-No generative AI:
-
-- Perceptual hash
-- Color analysis
-- Brightness
-- Contrast
-- Image similarity
-- Feature descriptors
-- Visual clustering
-
-### Layer 3 — moments generation
-
-Mostly deterministic:
-
-- Group photos
-- Group by time/location where available
-- Select representative images
-- Generate basic titles
-
-### Layer 4 — Optional AI enrichment
-
-Use a VLM for:
-
-- Semantic moments titles
-- Descriptions
-- Scene/activity classification
-- General visual themes
-
----
-
-## 6. Photo Ingestion
-
-### Supported input
-
-The first version should support filesystem-based ingestion.
-
-Example:
-
-```text
-/photos/
-    2026/
-        01/
-        02/
-        03/
-```
-
-Potential future sources:
-
-- iPhone exports
-- Android exports
-- SD cards
-- Camera storage
-- SMB/NFS folders
-- NAS photo libraries
-- Cloud photo exports
-
-### Supported formats
-
-Initial:
-
-- JPEG/JPG
-- PNG
-- WebP
-- HEIC/HEIF
-
-Future:
-
-- RAW
-- CR2
-- CR3
-- NEF
-- ARW
-- DNG
-
-The original file must never be modified.
-
----
-
-## 7. Photo Identification
-
-Each photo receives a stable internal identifier.
-
-Recommended fields:
-
-```text
-photo_id
-file_hash
-perceptual_hash
-source_path
-```
-
-### Cryptographic hash
-
-Use SHA-256 for exact duplicate detection:
-
-```text
-SHA256(photo bytes)
-```
-
-### Perceptual hash
-
-Use pHash/dHash/aHash for visually similar images.
-
-This can detect:
-
-- Resized copies
-- Recompressed copies
-- Slightly modified images
-- Exported copies
-- Similar burst photos
-
----
-
-## 8. Image Analysis
-
-Each photo should have a reusable analysis record.
-
-### Technical features
-
-```text
-width
-height
-aspect_ratio
-file_size
-format
-orientation
-creation_time
-camera_make
-camera_model
-lens
-iso
-exposure
-gps_latitude
-gps_longitude
-```
-
-Not every camera provides all fields.
-
-### Visual features
-
-Calculate:
-
-```text
-brightness
-contrast
-saturation
-dominant_colors
-color_histogram
-edge_density
-sharpness
-```
-
-### Feature descriptors
-
-Potential OpenCV features:
-
-- ORB
-- SIFT where deployment/licensing requirements permit
-- Local feature descriptors
-
----
-
-## 9. Duplicate Detection
-
-Duplicate detection should happen before moments clustering.
-
-### Exact duplicate
-
-```text
-SHA-256(A) == SHA-256(B)
-```
-
-Result:
-
-```text
-EXACT_DUPLICATE
-```
-
-### Near duplicate
-
-Use perceptual-hash Hamming distance:
-
-```text
-Hamming distance <= configurable threshold
-```
-
-Result:
-
-```text
-NEAR_DUPLICATE
-```
-
-### Duplicate policy
-
-The system must **not automatically delete photos**.
-
-Instead, create duplicate groups:
-
-```text
-duplicate group
- ├── primary candidate
- ├── duplicate
- └── duplicate
-```
-
-The user decides what to delete/archive.
-
----
-
-## 10. Photo Similarity
-
-No single feature is sufficient for general photo grouping.
-
-A similarity score can combine:
-
-```text
-visual similarity
-color similarity
-pHash similarity
-temporal similarity
-location similarity
-```
-
-Example starting weights:
-
-```text
-visual similarity       40%
-color similarity        15%
-pHash similarity        20%
-time proximity          15%
-location proximity      10%
-```
-
-These values should be configurable and tuned using real photo collections.
-
----
-
-## 11. Temporal Grouping
-
-Time is an important signal for personal photos.
-
-Example:
-
-```text
-10:00 photo
-10:02 photo
-10:05 photo
-10:07 photo
-```
-
-Likely one photo session.
-
-Whereas photos taken days apart are less likely to belong to the same event.
-
-Calculate:
-
-```text
-time_gap
-session_id
-```
-
-An initial configurable session gap can be **30 minutes**.
-
----
-
-## 12. Location Grouping
-
-If GPS metadata exists, use it as an additional signal.
-
-Calculate:
-
-```text
-latitude
-longitude
-location_cluster
-place_name
-```
-
-Potential result:
-
-```text
-Stockholm
-Gothenburg
-Paris
-Rome
-```
-
-Location processing should remain local by default.
-
-External geocoding should be opt-in.
-
----
-
-## 13. moments Clustering
-
-The system should not require the user to specify the number of momentss.
-
-Candidate approaches:
-
-- DBSCAN
-- HDBSCAN
-- Hierarchical clustering
-- Threshold-based connected components
-
-### Initial recommendation
-
-Start with a deterministic similarity graph or DBSCAN.
-
-DBSCAN is useful because it does not require a predefined number of clusters and can identify unrelated images as noise.
-
----
-
-## 14. Hybrid moments Grouping
-
-Pure visual similarity is not enough.
-
-Use:
-
-```text
-Visual similarity
-+
-Time proximity
-+
-Location proximity
-+
-Camera/session information
-```
-
-Example:
-
-```text
-09:30 beach
-09:31 beach
-09:33 beach
-09:40 restaurant
-09:41 restaurant
-```
-
-Possible momentss:
-
-```text
-Beach Morning
-Lunch at Restaurant
-```
-
----
-
-## 15. Representative Images
-
-Each moments should have one or more representative images.
-
-Possible scoring:
-
-```text
-representative_score =
-    sharpness
-    + exposure_quality
-    + uniqueness
-    + similarity_to_group_center
-```
-
-Select approximately:
-
-```text
-1–3 representative photos
-```
-
-These can also be the only images normally sent to an external VLM.
-
-This significantly reduces cost and privacy exposure.
-
----
-
-## 16. moments Naming Without AI
-
-The application must work without AI.
-
-Example deterministic titles:
-
-```text
-July 2026 — Stockholm
-August 2026 — Summer Trip
-September 2026 — Family Weekend
-October 2026 — Hiking
-```
-
-Inputs can include:
-
-```text
-date
-date range
-location
-photo count
-camera session
-user-defined rules
-```
-
-Example:
-
-```text
-2026-07-12 + Stockholm + 84 photos
-
-=> Stockholm — July 12, 2026
-```
-
----
-
-## 17. Optional AI moments Enrichment
-
-AI is an optional semantic layer.
-
-It can improve:
-
-- moments title
-- moments description
-- Semantic category
-- Activity
-- Scene
-- Style
-- General visual theme
-
-Example:
-
-```json
-{
-  "title": "A Summer Day by the Water",
-  "description": "A collection of outdoor photos showing a sunny day near the water, with relaxed scenes, nature and outdoor activities.",
-  "confidence": 0.87,
-  "attributes": {
-    "scene": "outdoor",
-    "activity": "leisure",
-    "environment": "water",
-    "season": "summer"
-  }
-}
-```
-
-The model must not invent:
-
-- People
-- Locations
-- Dates
-- Activities not visible
-- Specific objects that cannot be reasonably identified
-
----
-
-## 18. AI Model
-
-The AI layer must be replaceable.
-
-Potential models:
-
-- Qwen vision-language models
-- Gemma multimodal models
-- Other open-source VLMs
-- Managed cloud vision/multimodal models
-
-A lightweight model such as Qwen3-VL 4B can be evaluated for the first implementation.
-
-Use an abstraction such as:
-
-```go
-type momentsAI interface {
-    GeneratemomentsMetadata(
-        context momentsContext,
-    ) (momentsMetadata, error)
-}
-```
-
-This prevents the application from becoming coupled to one model/provider.
-
----
-
-## 19. Local AI vs Cloud AI
-
-Support two deployment modes.
-
-### Local AI
-
-```text
-NAS
- ├── Photo storage
- ├── PostgreSQL
- ├── Go application
- ├── OpenCV
- └── VLM
-```
-
-Advantages:
-
-- Maximum privacy
-- No external photo transfer
-- No per-request cloud cost
-- Offline operation
-
-Disadvantages:
-
-- Limited CPU/GPU performance
-- Larger models may be difficult to run
-- Longer inference times
-
-### Optional cloud GPU
-
-For a NAS without a suitable GPU:
-
-```text
-Personal NAS
-    │
-    ├── OpenCV analysis
-    ├── Clustering
-    └── 1–3 representative images/group
-                │
-                ▼
-        Temporary GPU server
-                │
-              VLM
-                │
-             JSON
-                │
-                ▼
-            Personal NAS
-```
-
-The GPU environment should ideally:
-
-```text
-start/create
-    ↓
-process batch
-    ↓
-return results
-    ↓
-stop/destroy
-```
-
-This avoids paying for an always-running GPU.
-
----
-
-## 20. Privacy Requirements
-
-Privacy is a first-class requirement.
-
-### Default behavior
-
-- Original photos remain local.
-- Metadata remains local.
-- Database remains local.
-- External AI is disabled unless enabled.
-- External geocoding is disabled unless enabled.
-- Face recognition is disabled unless explicitly enabled.
-
-### External AI
-
-If cloud AI is enabled:
-
-1. User explicitly enables it.
-2. The UI explains that selected photos leave the local environment.
-3. Only required representative photos are sent.
-4. EXIF metadata is stripped unless required.
-5. Temporary cloud copies are deleted after processing.
-6. The inference server must not become permanent photo storage.
-7. Processing activity should be auditable.
-
----
-
-## 21. Database Model
-
-PostgreSQL is recommended.
-
-### photos
-
-```sql
-photos
-------
-id
-source_path
-file_name
-file_hash
-perceptual_hash
-mime_type
-file_size
-width
-height
-orientation
-created_at
-imported_at
-updated_at
-status
-```
-
-### image_analysis
-
-```sql
-image_analysis
---------------
-id
-photo_id
-brightness
-contrast
-saturation
-sharpness
-dominant_colors
-color_histogram
-feature_data
-analysis_version
-created_at
-updated_at
-```
-
-### photo_location
-
-```sql
-photo_location
---------------
-photo_id
-latitude
-longitude
-location_cluster
-place_name
-```
-
-### momentss
-
-```sql
-momentss
-------
-id
-title
-description
-moments_type
-confidence
-start_time
-end_time
-location_name
-image_count
-status
-created_at
-updated_at
-```
-
-### moments_photos
-
-```sql
-moments_photos
-------------
-moments_id
-photo_id
-similarity_score
-representative_score
-is_representative
-created_at
-```
-
-### duplicate_groups
-
-```sql
-duplicate_groups
-----------------
-id
-duplicate_type
-created_at
-```
-
-### duplicate_group_photos
-
-```sql
-duplicate_group_photos
-----------------------
-group_id
-photo_id
-similarity_score
-is_primary
-```
-
----
-
-## 22. Processing State
-
-Suggested photo state:
-
-```text
-IMPORTED
-    ↓
-ANALYZING
-    ↓
-ANALYZED
-    ↓
-DUPLICATE_CHECKED
-    ↓
-GROUPED
-    ↓
-moments_ASSIGNED
-    ↓
-COMPLETED
-```
-
-Failure states:
-
-```text
-ANALYSIS_FAILED
-AI_FAILED
-GROUPING_FAILED
-```
-
-Failed operations must be retryable.
-
----
-
-## 23. Incremental Processing
-
-Do not reprocess the complete library every week.
-
-Normal processing should identify:
-
-```text
-new photos
-changed photos
-previously failed photos
-momentss affected by new photos
-```
-
-Example:
-
-```text
-Existing library: 100,000 photos
-New this week:         850 photos
-
-Process:
-850 new photos
-+
-affected existing groups
-```
-
-not:
-
-```text
-100,000 photos
-```
-
----
-
-## 24. Weekly Processing
-
-The initial deployment can run once per week.
-
-Example:
-
-```text
-Sunday 02:00
-```
-
-Workflow:
-
-```text
-1. Scan photo directories
-2. Detect new files
-3. Validate images
-4. Extract metadata
-5. Calculate hashes
-6. Detect duplicates
-7. Calculate visual features
-8. Find candidate existing momentss
-9. Cluster new photos
-10. Update/create momentss
-11. Select representative images
-12. Generate deterministic metadata
-13. Optionally call VLM
-14. Validate AI response
-15. Store results
-16. Mark processing complete
-```
-
-The schedule should be configurable.
-
----
-
-## 25. Periodic Full Re-Clustering
-
-Incremental processing is the default.
-
-A periodic full reconciliation should also be supported.
-
-Example:
-
-```text
-Weekly:
-    Incremental processing
-
-Monthly:
-    Full clustering/reconciliation
-```
-
-This helps correct moments boundaries as the collection grows.
-
----
-
-## 26. Recommended Technology Stack
-
-### Backend
-
-```text
-Go
-```
-
-### Image processing
-
-```text
-OpenCV
-GoCV
-```
-
-### Database
-
-```text
-PostgreSQL
-```
-
-Optional future semantic search:
-
-```text
-pgvector
-```
-
-### Storage
-
-```text
-Local filesystem
-NAS
-S3-compatible storage
-```
-
-### AI
-
-```text
-Qwen VLM
-Gemma multimodal model
-Other VLM
-```
-
-### Deployment
-
-```text
-Docker
-Synology Container Manager
-cron / Synology Task Scheduler
-```
-
----
-
-## 27. Synology NAS Deployment
-
-A Synology NAS can be the primary private server.
-
-Example:
-
-```text
-Synology NAS
-│
-├── /photos
-│
-├── /app
-│   ├── photo-organizer
-│   ├── postgres
-│   └── optional-vlm
-│
-├── /database
-│
-└── /processing
-```
-
-The NAS handles:
-
-- Photo storage
-- Ingestion
-- OpenCV processing
-- Clustering
+- Go server
 - PostgreSQL
-- Scheduling
+- Persistent media and temporary-upload volumes
+- `ffprobe` and `ffmpeg` in the server image
 
-AI can run locally or on a temporary cloud GPU.
+Behavior:
 
----
+- Upload, metadata extraction, thumbnail generation, dHash, near-duplicate grouping, gallery access, and manual moment management work.
+- Candidate grouping falls back to time-only clustering.
+- Automatic moment generation does not create moments without AI enrichment.
 
-## 28. Go Application Structure
+### 3.2 Full local intelligence profile
 
-Recommended logical modules:
+Adds:
 
-```text
-cmd/
-    server/
-    worker/
+- OpenCV moment worker built with `-tags opencv`
+- SigLIP/CLIP-compatible embedding HTTP service
+- Ollama or compatible `/api/chat` endpoint
+- Qwen3-VL vision model
+- Qwen3 text model
 
-internal/
-    ingestion/
-    metadata/
-    hashing/
-    imageanalysis/
-    duplicate/
-    similarity/
-    clustering/
-    momentss/
-    ai/
-    storage/
-    database/
-    scheduler/
+This profile activates the complete flow documented below.
+
+### 3.3 External inference profile
+
+The embedding and Qwen endpoints may run on another trusted machine or a temporary GPU host. Only thumbnails or selected semantic images should leave the media host. TLS, authentication, retention controls, and audit logging are deployment responsibilities because the current provider clients do not add service authentication themselves.
+
+## 4. Production Deployment Topology
+
+```mermaid
+flowchart TB
+    User[Web or mobile client]
+    Proxy[Reverse proxy or Cloudflare Tunnel]
+
+    subgraph Host[Private production host or NAS]
+        Server[Go gallery server<br/>HTTP API and schedulers]
+        CV[OpenCV moment worker<br/>external executable]
+        Media[(Persistent media volume)]
+        Temp[(Temporary upload volume)]
+        DB[(PostgreSQL)]
+    end
+
+    subgraph Models[Optional inference services]
+        Embed[SigLIP or CLIP<br/>embedding HTTP service]
+        Ollama[Ollama API]
+        Vision[Qwen3-VL model]
+        Text[Qwen3 text model]
+    end
+
+    User -->|HTTPS| Proxy
+    Proxy -->|trusted forwarded request| Server
+    Server -->|SQL transactions| DB
+    Server -->|originals and thumbnails| Media
+    Server -->|incomplete chunks| Temp
+    Server -->|JSON over stdin and stdout| CV
+    CV -->|read selected image paths| Media
+    Server -->|thumbnail as base64 JSON| Embed
+    Server -->|chat requests| Ollama
+    Ollama --> Vision
+    Ollama --> Text
 ```
 
-Example interfaces:
+### Ownership boundaries
 
-```go
-type ImageAnalyzer interface {
-    Analyze(ctx context.Context, photo Photo) (Analysis, error)
-}
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| Go server | HTTP, authentication, scheduling, orchestration, filesystem safety | Long-term model state |
+| PostgreSQL | Durable metadata, queues, relations, generated records | Original media bytes |
+| Media volume | Original files and generated thumbnails | Queue state |
+| OpenCV worker | Per-run features, clustering, representative scores | Durable records |
+| Embedding service | Vector inference | Photo persistence |
+| Qwen service | Structured visual and text inference | Permanent photo storage |
 
-type DuplicateDetector interface {
-    FindDuplicates(ctx context.Context, photo Photo) ([]Photo, error)
-}
+## 5. End-to-End Production Flow
 
-type momentsClusterer interface {
-    Cluster(ctx context.Context, photos []Photo) ([]momentsGroup, error)
-}
+```mermaid
+flowchart TD
+    A[Authenticated upload or scheduled NAS import]
+    B{SHA-256 already owned?}
+    C[Reject exact duplicate]
+    D[Persist media row and processing job]
+    E[Background processor claims job]
+    F[Extract metadata and create thumbnail]
+    G[Calculate dHash]
+    H{Embedding provider enabled?}
+    I[Request and store versioned embedding]
+    J[Group near duplicates and complete job]
+    K[Scheduled or manual moment generation]
+    L[Load eligible seven-day candidates]
+    M{OpenCV worker configured?}
+    N[Time-gap clustering]
+    O[Visual, hash, time, GPS clustering]
+    P[Select semantic images, maximum 15]
+    Q{Qwen pipeline configured?}
+    R[Skip automatic moment creation]
+    S[Describe each selected image]
+    T[Persist structured descriptions]
+    U[Synthesize title, description, confidence]
+    V{Confidence at least 0.65<br/>and description non-empty?}
+    W[Skip candidate group]
+    X[Create draft moment transactionally]
+    Y[User reviews, edits, publishes, or archives]
 
-type momentsAI interface {
-    GeneratemomentsMetadata(
-        ctx context.Context,
-        moments momentsContext,
-    ) (momentsMetadata, error)
-}
+    A --> B
+    B -->|yes| C
+    B -->|no| D
+    D --> E --> F --> G --> H
+    H -->|yes| I --> J
+    H -->|no| J
+    J --> K --> L --> M
+    M -->|no| N --> P
+    M -->|yes| O --> P
+    P --> Q
+    Q -->|no| R
+    Q -->|yes| S --> T --> U --> V
+    V -->|no| W
+    V -->|yes| X --> Y
 ```
 
----
+## 6. Upload and Queue Sequence
 
-## 29. API
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant API as Go server
+    participant Temp as Temporary volume
+    participant Media as Media volume
+    participant DB as PostgreSQL
+    participant Processor as Processing loop
 
-Future web/mobile API:
-
-```text
-POST   /photos/import
-GET    /photos
-GET    /photos/:id
-
-GET    /momentss
-GET    /momentss/:id
-PATCH  /momentss/:id
-
-GET    /duplicates
-POST   /duplicates/:id/ignore
-POST   /duplicates/:id/delete
-
-POST   /processing/run
-GET    /processing/status
+    User->>API: Create upload with name, size, MIME type, SHA-256
+    API->>DB: Check owner-scoped SHA-256
+    alt exact duplicate exists
+        API-->>User: Existing media or duplicate response
+    else new media
+        API->>Temp: Create resumable upload metadata
+        API-->>User: Upload ID and chunk size
+        loop each chunk
+            User->>API: PUT chunk
+            API->>Temp: Persist chunk
+        end
+        User->>API: Complete upload
+        API->>Temp: Assemble and verify SHA-256
+        API->>Media: Move completed file
+        API->>DB: Insert media and queued processing job
+        API-->>User: Completed media response
+        Processor->>DB: Claim with FOR UPDATE SKIP LOCKED
+    end
 ```
 
-The MVP can initially use a CLI worker without a sophisticated UI.
+Uploads are resumable across server restarts because temporary upload metadata and chunks are stored below `ENV_TMP_DIR`. Completed media paths are relative to `ENV_MEDIA_DIR`; path traversal is rejected before processing or inference.
 
----
+## 7. Media Preprocessing
 
-## 30. moments Lifecycle
+### 7.1 Worker behavior
 
-Suggested lifecycle:
+The processing loop runs inside the Go server and polls every five seconds when there is no immediately available job.
 
-```text
-DETECTED
-    ↓
-GENERATED
-    ↓
-REVIEWED
-    ↓
-PUBLISHED
+```mermaid
+flowchart TD
+    A[Claim oldest eligible job]
+    B{Job found?}
+    C[Wait for poll tick]
+    D[Mark processing and increment attempts]
+    E[Run ffprobe, timeout 2 minutes]
+    F[Parse dimensions, duration, capture time,<br/>GPS, camera, orientation, raw tags]
+    G[Run ffmpeg thumbnail, timeout 5 minutes]
+    H[Calculate 64-bit dHash from thumbnail]
+    I{Embedding enabled?}
+    J[POST thumbnail to embedding endpoint]
+    K[Atomic completion transaction]
+    L[Persist media fields and EXIF]
+    M[Create or update near-duplicate group]
+    N[Persist embedding when present]
+    O[Mark completed]
+    P{Attempt count below 3?}
+    Q[Requeue with exponential delay]
+    R[Mark failed]
+
+    A --> B
+    B -->|no| C --> A
+    B -->|yes| D --> E --> F --> G --> H --> I
+    I -->|yes| J --> K
+    I -->|no| K
+    K --> L --> M --> N --> O
+    E -. error .-> P
+    G -. error .-> P
+    H -. error .-> P
+    J -. error .-> P
+    K -. error .-> P
+    P -->|yes| Q --> A
+    P -->|no| R
 ```
 
-Or:
+### 7.2 Processing state machine
 
-```text
-DRAFT
-PUBLISHED
-ARCHIVED
+```mermaid
+stateDiagram-v2
+    [*] --> queued: upload completed
+    queued --> processing: atomic claim
+    processing --> completed: persistence transaction committed
+    processing --> queued: attempt 1 or 2 failed
+    processing --> processing: stale claim reclaimed after 15 minutes
+    processing --> failed: attempt 3 failed
+    failed --> queued: administrator retry
+    completed --> [*]
 ```
 
-Users can manually modify:
+Retries use increasing delays derived from the attempt count. Administrators can inspect the latest 200 jobs and manually requeue failed jobs.
 
-- Title
-- Description
-- moments membership
-- Cover image
-- Visibility
-- Status
+### 7.3 Near-duplicate policy
 
-AI-generated metadata must never overwrite user-edited metadata without explicit permission.
+For each completed item, the transaction finds the nearest dHash among the same owner's active media. A distance of five bits or fewer creates or extends a near-duplicate group. The first image is the primary; subsequent members are excluded from automatic moment candidates. No file is deleted.
 
----
+## 8. Candidate Selection and Clustering
 
-## 31. User Control
+### 8.1 Candidate eligibility
 
-Automation should assist the user rather than take control.
+A photo is eligible only when all conditions hold:
 
-Users should be able to:
+- It is an image and is not in trash.
+- Its processing job is completed.
+- Its capture or upload timestamp is within the previous seven days and not in the future.
+- The requesting owner owns it or has library-level shared access.
+- It is not a non-primary near duplicate.
+- It is not already assigned to one of that owner's moments.
 
-- Rename momentss
-- Merge momentss
-- Split momentss
-- Remove photos from momentss
-- Add photos to momentss
-- Select cover images
-- Ignore duplicate suggestions
-- Delete momentss without deleting photos
-- Disable AI
-- Disable cloud processing
-- Configure processing frequency
+### 8.2 Clustering modes
 
----
+```mermaid
+flowchart LR
+    Candidates[Eligible candidates]
+    Config{ENV_MOMENTS_CV_WORKER set?}
+    Temporal[Sort by capture time<br/>split at gaps over 30 minutes]
+    Features[Read image and calculate<br/>histogram, dHash, sharpness, exposure]
+    Similarity[Weighted pair similarity]
+    Density[Mutual-reachability graph<br/>minimum spanning tree and threshold cut]
+    Groups[Exclusive groups]
+    Score[Score and mark representatives]
 
-## 32. Future Extensions
-
-### People
-
-Optional face detection and face clustering.
-
-This must be opt-in because biometric information is privacy-sensitive.
-
-### Places
-
-Automatic location grouping:
-
-```text
-Stockholm
-Paris
-Rome
-Barcelona
+    Candidates --> Config
+    Config -->|no| Temporal --> Groups
+    Config -->|yes| Features --> Similarity --> Density --> Groups --> Score
 ```
 
-### Activities
+The OpenCV worker receives candidate JSON on standard input and returns group JSON on standard output. The server rejects unknown, duplicate, or omitted candidate IDs before accepting the result.
 
-Possible semantic categories:
+### 8.3 Similarity model
 
-```text
-Hiking
-Swimming
-Cycling
-Cooking
-Travel
-Shopping
-Celebration
-Sports
-Nature
+When embeddings exist for both images, cosine similarity is the visual signal. Otherwise the color-histogram intersection is used.
+
+$$
+S = 0.55S_{visual} + 0.20S_{dHash} + 0.15S_{time} + 0.10S_{location}
+$$
+
+Current limits:
+
+- Time similarity decays to zero over six hours.
+- Location similarity decays to zero over 50 km.
+- Missing GPS contributes a neutral `0.5` location similarity.
+- MST edges are retained at similarity `>= 0.62`.
+
+The implementation borrows the mutual-reachability and MST construction used by density clustering, but it is not canonical HDBSCAN: it does not build a condensed hierarchy, calculate cluster stability, assign soft membership, or emit an explicit noise label.
+
+### 8.4 Representative selection
+
+Quality score:
+
+$$
+Q = 0.45S_{centrality} + 0.35S_{sharpness} + 0.20S_{exposure}
+$$
+
+Iterative selection balances quality and novelty:
+
+$$
+R = 0.65Q + 0.35S_{diversity}
+$$
+
+Selection count:
+
+- Empty group: zero.
+- Fewer than five images: one.
+- Five or more: $\lceil\sqrt{n}\rceil$, clamped to 5 through 15 and never greater than the group size.
+
+## 9. Semantic Enrichment
+
+Groups smaller than three are ignored. For larger groups, representatives are selected first, then timeline samples fill any remaining semantic slots up to 15 images.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Moments as Moment service
+    participant Media as Media volume
+    participant Vision as Qwen3-VL
+    participant DB as PostgreSQL
+    participant Text as Qwen3 text model
+
+    loop each selected semantic image, maximum 15
+        Moments->>Media: Read selected image
+        Moments->>Vision: Image plus strict JSON prompt
+        Vision-->>Moments: Structured image description
+    end
+    Moments->>DB: Upsert all descriptions in one transaction
+    Moments->>Text: Descriptions plus date and location context, no images
+    Text-->>Moments: Title, description, confidence
+    alt confidence >= 0.65 and description is non-empty
+        Moments->>DB: Create draft moment and memberships atomically
+    else insufficient agreement
+        Moments-->>Moments: Skip group
+    end
 ```
 
-### Events
-
-Automatic event detection:
-
-```text
-Birthday
-Wedding
-Christmas
-New Year
-Concert
-Graduation
-Holiday
-```
-
-### Timeline
-
-Create a chronological view:
-
-```text
-2026
- ├── January
- ├── February
- ├── March
- └── ...
-```
-
-### Smart Search
-
-Future queries:
-
-```text
-photos from my summer vacation
-photos of mountains
-photos taken at the beach
-photos from Paris
-photos with a sunset
-```
-
-This can use image embeddings and PostgreSQL/pgvector.
-
-### Photo Quality Detection
-
-Identify:
-
-- Blurry photos
-- Very dark photos
-- Overexposed photos
-- Closed eyes
-- Poor framing
-- Duplicate burst photos
-
-The system should suggest rather than automatically delete photos.
-
-### Mobile Application
-
-A future mobile app could:
-
-- Upload photos
-- Display generated momentss
-- Approve/reject moments suggestions
-- Manage duplicates
-- Trigger processing
-
-### Desktop Application
-
-A desktop client could support:
-
-- Local folder import
-- SD-card import
-- moments management
-- Local processing
-- Offline operation
-
-### Photo Library Integration
-
-Potential future integrations:
-
-- Apple Photos
-- Google Photos
-- Synology Photos
-- Immich
-- Other photo-management systems
-
-All integrations should be optional.
-
----
-
-## 33. Security
-
-Secure-by-default requirements:
-
-- No public database exposure.
-- No public PostgreSQL port.
-- Authentication for web APIs.
-- Authorization for photo access.
-- TLS for remote access.
-- Secrets outside source code.
-- Short-lived cloud credentials.
-- Short-lived upload/download URLs where applicable.
-- Audit logs for cloud AI processing.
-- Configurable processing-log retention.
-
----
-
-## 34. Performance Requirements
-
-Initial target:
-
-```text
-10,000–100,000 photos
-```
-
-Future target:
-
-```text
-500,000+ photos
-```
-
-Processing should be:
-
-- Incremental
-- Parallel where safe
-- Restartable
-- Idempotent
-- Observable
-
-The worker must avoid loading the complete photo library into memory.
-
----
-
-## 35. Observability
-
-Expose metrics such as:
-
-```text
-photos discovered
-photos processed
-photos failed
-duplicates found
-momentss created
-momentss updated
-AI requests
-AI failures
-processing duration
-```
-
-Example:
-
-```text
-Weekly processing
-
-Photos discovered:       843
-New photos:              812
-Duplicates:               31
-momentss updated:           14
-New momentss:                7
-AI requests:              21
-Processing time:       18 min
-```
-
----
-
-## 36. Cost Optimization
-
-The default architecture should minimize AI usage.
-
-Instead of:
-
-```text
-1,000 photos
-→ 1,000 AI requests
-```
-
-use:
-
-```text
-1,000 photos
-→ OpenCV analysis
-→ 20 groups
-→ 1–3 representative photos/group
-→ ~20 AI requests
-```
-
-AI should normally run only when:
-
-- A new moments is created.
-- An existing moments changes significantly.
-- The user explicitly requests regeneration.
-- AI metadata is missing.
-
----
-
-## 37. Privacy-First Cloud GPU Strategy
-
-If the NAS does not have enough compute for the VLM:
-
-```text
-NAS
- │
- ├── Original photos remain local
- ├── OpenCV analysis
- ├── Clustering
- └── Select representative images
-          │
-          ▼
-    Temporary cloud GPU
-          │
-          ├── VLM inference
-          ├── JSON result
-          └── temporary files deleted
-          │
-          ▼
-          NAS
-```
-
-The cloud GPU is an inference worker, not the primary photo-storage system.
-
----
-
-## 38. MVP Roadmap
-
-### Phase 1 — Core photo analysis
-
-Implement:
-
-- Filesystem scanning
-- JPEG/PNG/HEIC support
-- SHA-256
-- pHash
-- EXIF extraction
-- Dimensions
-- Basic OpenCV features
-- Duplicate detection
-- Similarity scoring
-- Time-based grouping
-- Basic clustering
-- PostgreSQL persistence
-- CLI worker
-
-No AI required.
-
-### Phase 2 — moments generation
-
-Add:
-
-- Representative image selection
-- moments generation
-- Deterministic titles
-- Weekly scheduler
-- Incremental processing
-- moments management API
-
-### Phase 3 — AI enrichment
-
-Add:
-
-- VLM
-- AI-generated titles
-- AI-generated descriptions
-- Semantic attributes
-- Local VLM deployment
-- Optional cloud GPU deployment
-
-### Phase 4 — Advanced intelligence
-
-Add:
-
-- Location clustering
-- Semantic search
-- Face/person grouping
-- Mobile/desktop UI
-- External photo-library integrations
-
----
-
-## 39. Example End-to-End Scenario
-
-A user returns from a vacation and copies:
-
-```text
-1,250 photos
-```
-
-into the configured photo directory.
-
-The weekly worker starts.
-
-### Step 1 — Discovery
-
-```text
-1,250 new files
-```
-
-### Step 2 — Analysis
-
-OpenCV extracts:
-
-```text
-resolution
-aspect ratio
-brightness
-colors
-sharpness
-pHash
-visual descriptors
-```
-
-### Step 3 — Duplicate detection
-
-```text
-87 exact duplicates
-143 near duplicates
-```
-
-Nothing is automatically deleted.
-
-### Step 4 — Temporal grouping
-
-Possible sessions:
-
-```text
-Airport
-Hotel
-Beach
-Restaurant
-Hiking
-City sightseeing
-```
-
-### Step 5 — Visual clustering
-
-The system identifies approximately:
-
-```text
-12 moments candidates
-```
-
-### Step 6 — Representative selection
-
-Each moments receives:
-
-```text
-1–3 representative photos
-```
-
-### Step 7 — Deterministic metadata
-
-Example:
-
-```text
-Date: 2026-08-14
-Location: Barcelona
-Photos: 146
-```
-
-### Step 8 — Optional AI
-
-Only representative images are sent to the VLM.
-
-Possible result:
+### 9.1 Per-image contract
 
 ```json
 {
-  "title": "A Day Exploring Barcelona",
-  "description": "Photos from a day exploring the city, including streets, architecture and outdoor scenes.",
-  "confidence": 0.89
+  "people": ["two children"],
+  "activities": ["playing"],
+  "location_type": "park",
+  "objects": ["ball", "trees"],
+  "scene": "outdoor",
+  "weather": "sunny",
+  "description": "Two children playing with a ball in a park."
 }
 ```
 
-### Step 9 — Final moments
+The vision prompt requires visible evidence only. Unknown details must be empty, and the model must not identify people or invent dates, places, activities, or weather.
 
-```text
-A Day Exploring Barcelona
+### 9.2 Synthesis contract
 
-146 photos
-
-[cover image]
+```json
+{
+  "title": "An Afternoon in the Park",
+  "description": "Children play outdoors in a tree-lined park.",
+  "confidence": 0.87
+}
 ```
 
-The original 1,250 photos remain untouched.
+The text request contains no images. Confidence is normalized to `0..1`; values from `1..100` are accepted and divided by 100 for provider compatibility.
 
----
+### 9.3 Failure behavior
 
-## 40. Key Architectural Principles
+- If any image description fails, that group is skipped for the current run.
+- Descriptions are committed before text synthesis. A synthesis failure leaves reusable descriptions but does not create a partial moment.
+- Model failures are logged and processing continues with the next group.
+- AI requests do not currently have their own durable queue or retry policy.
 
-### 1. Local-first
+## 10. Transactional Moment Creation
 
-The user's photos belong to the user.
+```mermaid
+flowchart TD
+    A[Begin PostgreSQL transaction]
+    B[Acquire owner-scoped advisory lock]
+    C[Recheck every candidate is accessible,<br/>active, image media, and unassigned]
+    D{All candidates still available?}
+    E[Return already-assigned result]
+    F[Insert draft moment]
+    G[Insert membership, similarity,<br/>representative score and flag]
+    H[Commit]
 
-### 2. AI-optional
-
-The application remains useful without AI.
-
-### 3. Deterministic where possible
-
-Use algorithms instead of AI where reliable non-AI solutions exist.
-
-### 4. Incremental
-
-Never process the complete library unnecessarily.
-
-### 5. Non-destructive
-
-Never automatically modify or delete original photos.
-
-### 6. Explainable
-
-moments grouping should be explainable through:
-
-```text
-time
-location
-visual similarity
-image features
+    A --> B --> C --> D
+    D -->|no| E
+    D -->|yes| F --> G --> H
 ```
 
-### 7. Replaceable AI
+The advisory lock serializes generation per owner. Manual edits set `user_edited = true`; title, description, status, membership, and cover remain user-controlled through authenticated endpoints.
 
-Do not tightly couple the application to one model/provider.
+## 11. Data Model
 
-### 8. Privacy by default
+```mermaid
+erDiagram
+    users ||--o{ media_uploads : owns
+    media_uploads ||--|| media_processing_jobs : queues
+    media_uploads ||--o| media_exif : has
+    media_uploads ||--o{ media_embeddings : has
+    media_uploads ||--o{ media_image_descriptions : has
+    users ||--o{ media_duplicate_groups : owns
+    media_duplicate_groups ||--|{ media_duplicate_group_members : contains
+    media_uploads ||--o{ media_duplicate_group_members : belongs_to
+    users ||--o{ moments : owns
+    moments ||--|{ moment_media : contains
+    media_uploads ||--o{ moment_media : assigned_to
 
-External processing requires explicit configuration.
+    media_processing_jobs {
+        text id PK
+        text upload_id UK
+        text status
+        int attempts
+        text last_error
+        timestamptz scheduled_for
+    }
 
-### 9. User controlled
+    media_exif {
+        text upload_id PK
+        timestamptz captured_at
+        float latitude
+        float longitude
+        text camera_make
+        text camera_model
+        text orientation
+        text perceptual_hash
+        jsonb raw_exif
+    }
 
-Automation provides suggestions rather than irreversible actions.
+    media_embeddings {
+        text upload_id PK
+        text model PK
+        text version PK
+        int dimensions
+        float_array embedding
+    }
 
-### 10. Scalable
+    media_image_descriptions {
+        text upload_id PK
+        text model PK
+        text version PK
+        text_array people
+        text_array activities
+        text location_type
+        text_array objects
+        text scene
+        text weather
+        text description
+    }
 
-The architecture should work for thousands of photos initially and hundreds of thousands later.
+    moments {
+        uuid id PK
+        uuid owner_id
+        text title
+        text description
+        text status
+        timestamptz start_time
+        timestamptz end_time
+        text cover_media_id
+        boolean user_edited
+    }
 
----
-
-## 41. Recommended Initial Architecture
-
-```text
-                 ┌────────────────────┐
-                 │ Personal Photos     │
-                 │ Phone / Camera      │
-                 └─────────┬──────────┘
-                           │
-                           ▼
-                 ┌────────────────────┐
-                 │ Synology NAS       │
-                 │                    │
-                 │ Photo Storage      │
-                 │ Go Worker          │
-                 │ OpenCV / GoCV      │
-                 │ PostgreSQL         │
-                 └─────────┬──────────┘
-                           │
-                     Representative
-                         Images
-                           │
-                  ┌────────▼─────────┐
-                  │ Optional VLM     │
-                  │                  │
-                  │ Local NAS or     │
-                  │ Temporary GPU    │
-                  └────────┬─────────┘
-                           │
-                           ▼
-                 ┌────────────────────┐
-                 │ Personal momentss    │
-                 │                    │
-                 │ Title              │
-                 │ Description        │
-                 │ Cover              │
-                 │ Photos             │
-                 └────────────────────┘
+    moment_media {
+        uuid moment_id PK
+        text upload_id PK
+        float similarity_score
+        float representative_score
+        boolean is_representative
+    }
 ```
 
----
+## 12. Scheduling and Triggers
 
-## 42. Success Criteria
+| Trigger | Default | Behavior |
+| --- | --- | --- |
+| Processing worker | Continuous | Drains queued jobs; waits five seconds when idle |
+| Moment generation | Every `168h` | Runs for all users after each interval tick |
+| Manual generation | `POST /moments/generate` | Runs immediately for the authenticated owner |
+| Automatic albums | Daily at `02:00` local time | Separate feature; reconciles albums, not moments |
+| NAS import | Same daily schedule when configured | Discovers imported media before normal processing |
+| Cleanup | Every `1h` | Cleans expired sessions and abandoned uploads |
 
-The MVP is successful when a user can:
+The moment scheduler does not run immediately at startup. Operators can use the manual endpoint for an initial run or wait for the first interval.
 
-1. Copy photos from a phone or camera into a configured folder.
-2. Run the photo organizer.
-3. Identify duplicates without deleting anything.
-4. Group visually/time-related photos automatically.
-5. See generated moments candidates.
-6. See representative cover photos.
-7. Generate useful titles without AI.
-8. Optionally generate better titles/descriptions using a VLM.
-9. Run processing automatically every week.
-10. Keep the original photo library under their control.
-11. Process only new/changed photos after the initial scan.
-12. Disable all external AI processing if desired.
+## 13. Runtime Configuration
 
----
+### Required core settings
 
-## 43. Long-Term Vision
+| Variable | Purpose |
+| --- | --- |
+| `ENV_DATABASE_URL` | PostgreSQL connection URL |
+| `ENV_MEDIA_DIR` | Persistent originals and thumbnails |
+| `ENV_TMP_DIR` | Resumable upload state and chunks |
+| `ENV_PORT` | HTTP listen port |
+| `ENV_ADMIN_USERNAME` | One-time setup authorization username |
+| `ENV_ADMIN_PASSWORD` | One-time setup authorization password |
 
-The long-term goal is a **private personal photo intelligence system**, rather than simply a duplicate finder.
+### Moment pipeline settings
 
-```text
-                    Personal Photo Library
-                             │
-             ┌───────────────┼────────────────┐
-             │               │                │
-           Time            Place            Visual
-             │               │                │
-          Events           Trips            Scenes
-             │               │                │
-             └───────────────┼────────────────┘
-                             │
-                       Smart momentss
-                             │
-                    ┌────────┼────────┐
-                    │        │        │
-                 Search   Timeline  Stories
+| Variable | Default | Effect when empty |
+| --- | --- | --- |
+| `ENV_MOMENTS_INTERVAL` | `168h` | Invalid or non-positive values stop startup |
+| `ENV_MOMENTS_CV_WORKER` | empty | Uses temporal clustering |
+| `ENV_MOMENTS_EMBEDDING_URL` | empty | Skips embeddings; CV falls back to histogram similarity |
+| `ENV_MOMENTS_EMBEDDING_MODEL` | `siglip` | Sent to the embedding provider |
+| `ENV_MOMENTS_QWEN_URL` | empty | Automatic moment creation is skipped |
+| `ENV_MOMENTS_QWEN_MODEL` | `qwen3-vl:4b` | Vision model identifier |
+| `ENV_MOMENTS_QWEN_TEXT_MODEL` | `qwen3:4b` | Text synthesis model identifier |
+
+### Fixed algorithm values
+
+These values are currently compile-time constants:
+
+| Setting | Value |
+| --- | --- |
+| Candidate window | 7 days |
+| Temporal fallback gap | 30 minutes |
+| Minimum group size | 3 images |
+| Maximum semantic images | 15 |
+| Minimum synthesis confidence | 0.65 |
+| Near-duplicate dHash distance | 5 bits |
+| CV similarity threshold | 0.62 |
+
+## 14. Production Deployment Checklist
+
+### Storage and database
+
+- Mount `ENV_MEDIA_DIR`, `ENV_TMP_DIR`, and PostgreSQL data on persistent storage.
+- Back up PostgreSQL and media together to preserve referential consistency.
+- Verify the server user can read and write mounted media directories.
+- Keep PostgreSQL off the public network.
+- Test restore procedures, not only backup creation.
+
+### Full intelligence profile
+
+- Build `cmd/moments-cv-worker` with `CGO_ENABLED=1` and `-tags opencv` against compatible OpenCV libraries.
+- Place the worker in the server container or on the same host filesystem and set `ENV_MOMENTS_CV_WORKER` to its executable path.
+- Ensure the worker can read the same media paths as the server.
+- Deploy the embedding endpoint before setting `ENV_MOMENTS_EMBEDDING_URL`.
+- Pull both the vision and text Qwen models.
+- Confirm the server can reach model services over a private network.
+- Run one manual generation request before relying on the weekly scheduler.
+
+### Security and privacy
+
+- Terminate TLS at a trusted reverse proxy.
+- Set `ENV_TRUSTED_PROXIES` only to known proxy CIDRs.
+- Restrict CORS to deployed frontend origins.
+- Replace all example credentials and tunnel tokens.
+- Keep inference services private; do not expose Ollama directly to the public internet.
+- Treat thumbnails, embeddings, and descriptions as personal data.
+- If inference leaves the host, define deletion, retention, and audit policies.
+- Do not log image payloads, credentials, TOTP secrets, or raw model requests.
+
+### Availability
+
+- Gate server startup on PostgreSQL readiness.
+- Monitor `/healthz` for liveness and `/readyz` for dependency readiness.
+- Use a restart policy such as `unless-stopped`.
+- Configure JSON log rotation.
+- Alert on repeated processing failures and model endpoint errors.
+
+## 15. Observability
+
+The server currently emits structured JSON logs. Production monitoring should derive or add metrics for:
+
+- Uploads created, completed, rejected, and abandoned.
+- Processing queue depth by status.
+- Oldest queued job age.
+- Processing duration and attempts.
+- Metadata, thumbnail, embedding, CV, vision, and synthesis failures.
+- Near-duplicate groups and excluded candidates.
+- Candidates loaded, groups formed, and groups below minimum size.
+- Model request duration and response-validation failures.
+- Moments created, skipped for confidence, or skipped as already assigned.
+- Scheduler run duration and last successful completion.
+- Media, temporary-volume, and PostgreSQL disk utilization.
+
+Recommended alerts:
+
+| Condition | Initial threshold |
+| --- | --- |
+| Failed processing jobs | Any sustained increase |
+| Oldest queued job | Older than 30 minutes |
+| Readiness failure | Two consecutive checks |
+| Model endpoint failure rate | More than 10% over 15 minutes |
+| Moment scheduler | No successful run for twice the configured interval |
+| Free media or temporary storage | Below `ENV_MIN_DISK_FREE_BYTES` plus operating margin |
+
+## 16. Scaling Model
+
+### Current safe scale-out
+
+- PostgreSQL queue claims use `FOR UPDATE SKIP LOCKED`, so multiple processing loops can claim different jobs safely.
+- Moment persistence uses an owner-scoped advisory transaction lock, preventing concurrent generators from assigning the same candidates for one owner.
+- Shared server replicas require the same media and temporary filesystems.
+
+### Current bottlenecks
+
+- Near-duplicate matching scans existing owner hashes during completion.
+- Embeddings are stored as arrays without an ANN index.
+- The OpenCV command loads and compares the complete seven-day candidate set for an owner in one process.
+- Image descriptions are requested sequentially.
+- AI calls happen synchronously inside a moment-generation run.
+- Moment scheduling is in-process; multiple server replicas may start the same generation run, although database locking protects final assignment.
+
+### Scale-out path
+
+1. Separate API and background-worker process roles.
+2. Put preprocessing, embedding, description, and synthesis in explicit durable job types.
+3. Add scheduler leadership or an external scheduler.
+4. Add bounded concurrency and provider rate limits.
+5. Introduce pgvector or another ANN index only when measured candidate volume requires it.
+6. Partition clustering by owner and bounded time window.
+
+## 17. Failure and Recovery Matrix
+
+| Failure | Current result | Recovery |
+| --- | --- | --- |
+| Server restarts during upload | Chunks and metadata remain in temporary storage | Resume upload before retention cleanup |
+| Server restarts during processing | A job may remain `processing` | Reclaimed after 15 minutes |
+| `ffprobe`, `ffmpeg`, dHash, or embedding fails | Job retries, then becomes failed on attempt 3 | Fix dependency and use admin retry |
+| OpenCV worker exits or returns invalid IDs | Current moment run fails for the owner | Fix worker and rerun generation |
+| One vision request fails | Current group is skipped | Rerun generation; no durable AI retry yet |
+| Text synthesis fails | Descriptions remain, no moment is created | Rerun generation |
+| Confidence below 0.65 | Group is intentionally skipped | Tune model/prompt or review threshold in code |
+| Concurrent assignment wins elsewhere | Transaction returns already assigned | No action required |
+| PostgreSQL unavailable | Readiness and database operations fail | Restore database connectivity; durable state remains in PostgreSQL |
+| Media path missing | Processing or enrichment fails | Restore file or repair the database/file relationship |
+
+## 18. API Surface for Moments
+
+All routes require an authenticated session.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/moments` | List the current user's moments |
+| `POST` | `/moments/generate` | Run generation immediately for the current user |
+| `GET` | `/moments/:id` | Get a moment and ordered media |
+| `PATCH` | `/moments/:id` | Update title, description, or status |
+| `DELETE` | `/moments/:id` | Delete the moment, not its media |
+| `POST` | `/moments/:id/media` | Add accessible image media |
+| `DELETE` | `/moments/:id/media/:mediaID` | Remove media while preserving at least one member |
+| `PATCH` | `/moments/:id/cover` | Select a member as cover |
+| `GET` | `/media/files/:id/processing-status` | Read media processing status |
+| `GET` | `/admin/processing-jobs` | Inspect recent jobs as an administrator |
+| `POST` | `/admin/processing-jobs/:id/retry` | Retry a failed processing job |
+
+## 19. Acceptance Checks
+
+Before enabling scheduled generation in production, verify:
+
+1. A resumable upload survives a server restart and completes with the expected SHA-256.
+2. A completed image produces dimensions, a thumbnail, EXIF data, and dHash.
+3. A failed processing dependency reaches `failed` after three attempts and an administrator can retry it.
+4. Near-duplicate secondary images are absent from candidate queries.
+5. Embeddings persist with model, version, dimensions, and vector when enabled.
+6. The OpenCV worker returns every candidate exactly once and chooses expected representatives on a labeled fixture.
+7. Vision inference receives one selected image per request.
+8. Text synthesis receives descriptions and no image payload.
+9. Low-confidence output does not create a moment.
+10. Concurrent generation does not assign one photo twice for the same owner.
+11. User edits set `user_edited` and remain authoritative.
+12. Backup restoration recovers media, processing state, descriptions, moments, and memberships consistently.
+
+Repository validation commands:
+
+```bash
+go test ./...
+go test -tags opencv ./app/processing ./app/db ./app/moments ./cmd/moments-cv-worker ./cmd/server
 ```
 
-The system should remain:
+## 20. Roadmap
 
-- Privacy-first
-- User-controlled
-- Non-destructive
-- Useful without AI
-- Extensible with AI
-- Suitable for local NAS/private-server deployment
+### Production hardening
 
-AI should act as an optional semantic layer on top of a strong deterministic photo-processing foundation.
+1. Package the OpenCV worker and required native libraries in a production image or dedicated worker image.
+2. Pull and health-check both configured Qwen models in deployment manifests.
+3. Add a durable queue for image descriptions and text synthesis.
+4. Add deterministic moment metadata when AI is disabled.
+5. Add metrics, traces, scheduler-run records, and operational dashboards.
+6. Persist explicit prompt and schema versions for image descriptions.
+
+### Product capabilities
+
+1. Add near-duplicate review and user decisions.
+2. Add local reverse geocoding and location names.
+3. Add merge and split workflows for generated moments.
+4. Add semantic search over embeddings and descriptions.
+5. Add opt-in face or person grouping with biometric-data controls.
+6. Add periodic full reconciliation in addition to incremental generation.
+
+### Algorithm evolution
+
+1. Make weights and thresholds configurable and versioned.
+2. Build a labeled evaluation set for grouping and representative quality.
+3. Evaluate canonical HDBSCAN only if hierarchy stability, explicit noise, or soft membership improves measured outcomes.
+4. Add embedding indexes only after query measurements justify the operational cost.
+
+## 21. Invariants
+
+The production implementation must preserve these rules:
+
+1. Original media is never modified or automatically deleted.
+2. Exact and near duplicates are owner-scoped.
+3. Media access is checked against ownership or explicit sharing.
+4. Filesystem paths cannot escape configured roots.
+5. A photo belongs to at most one generated moment per owner.
+6. AI output is validated before persistence.
+7. Low-confidence semantic output cannot create a moment.
+8. User edits are explicit and must not be silently overwritten.
+9. External inference is optional configuration, not a prerequisite for upload, storage, gallery access, or deterministic preprocessing.
+10. Deployment documentation must distinguish configured capability from code that merely exists in the repository.

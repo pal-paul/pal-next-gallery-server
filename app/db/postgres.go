@@ -119,7 +119,58 @@ CREATE TABLE IF NOT EXISTS media_exif (
 	captured_at TIMESTAMPTZ,
 	latitude DOUBLE PRECISION,
 	longitude DOUBLE PRECISION,
+	camera_make TEXT NOT NULL DEFAULT '',
+	camera_model TEXT NOT NULL DEFAULT '',
+	orientation TEXT NOT NULL DEFAULT '',
+	perceptual_hash TEXT NOT NULL DEFAULT '',
 	raw_exif JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS camera_make TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS camera_model TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS orientation TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_exif ADD COLUMN IF NOT EXISTS perceptual_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS media_exif_perceptual_hash_idx ON media_exif(perceptual_hash) WHERE perceptual_hash <> '';
+CREATE TABLE IF NOT EXISTS media_duplicate_groups (
+	id TEXT PRIMARY KEY,
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL CHECK (kind IN ('near')),
+	primary_upload_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS media_duplicate_group_members (
+	group_id TEXT NOT NULL REFERENCES media_duplicate_groups(id) ON DELETE CASCADE,
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	hamming_distance INTEGER NOT NULL CHECK (hamming_distance BETWEEN 0 AND 64),
+	is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (group_id, upload_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS media_duplicate_member_near_idx ON media_duplicate_group_members(upload_id);
+CREATE UNIQUE INDEX IF NOT EXISTS media_duplicate_primary_idx ON media_duplicate_group_members(group_id) WHERE is_primary;
+CREATE TABLE IF NOT EXISTS media_embeddings (
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	model TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT '',
+	dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+	embedding DOUBLE PRECISION[] NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (upload_id, model, version),
+	CHECK (array_length(embedding, 1) = dimensions)
+);
+CREATE INDEX IF NOT EXISTS media_embeddings_upload_idx ON media_embeddings(upload_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS media_image_descriptions (
+	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	model TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT '',
+	people TEXT[] NOT NULL DEFAULT '{}',
+	activities TEXT[] NOT NULL DEFAULT '{}',
+	location_type TEXT NOT NULL DEFAULT '',
+	objects TEXT[] NOT NULL DEFAULT '{}',
+	scene TEXT NOT NULL DEFAULT '',
+	weather TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (upload_id, model, version)
 );
 CREATE TABLE IF NOT EXISTS media_shares (
 	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
