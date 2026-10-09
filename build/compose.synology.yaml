@@ -48,11 +48,26 @@ services:
         max-file: "5"
     restart: unless-stopped
 
-  ollama-model:
+  ollama-vision-model:
     image: ollama/ollama:latest
     environment:
       OLLAMA_HOST: http://ollama:11434
     command: ["pull", "qwen3-vl:4b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    restart: "no"
+
+  ollama-text-model:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "qwen3:4b"]
     depends_on:
       ollama:
         condition: service_healthy
@@ -87,8 +102,12 @@ services:
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
       ENV_MOMENTS_INTERVAL: 168h
+      ENV_MOMENTS_CV_WORKER: /app/moments-cv-worker
       ENV_MOMENTS_QWEN_URL: http://ollama:11434
       ENV_MOMENTS_QWEN_MODEL: qwen3-vl:4b
+      ENV_MOMENTS_QWEN_TEXT_MODEL: qwen3:4b
+      ENV_MOMENTS_EMBEDDING_URL: ""
+      ENV_MOMENTS_EMBEDDING_MODEL: siglip
       NAS_IMPORT_PATH: /data/import
       ENV_MEDIA_DIR: /data/gallery
       ENV_TMP_DIR: /data/tmp
@@ -113,7 +132,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama-model:
+      ollama-vision-model:
+        condition: service_completed_successfully
+      ollama-text-model:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]

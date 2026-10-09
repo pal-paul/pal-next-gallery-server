@@ -29,11 +29,12 @@ Synology may validate bind-mount sources before Compose processes
 uses a volume other than `volume1`, update every source path in the Compose
 file.
 
-The bundled `qwen3-vl:4b` model requires roughly 4 GB for model storage and
+The bundled vision and text models require roughly 8 GB for model storage and
 additional memory while running. Allow at least 8 GB of available RAM for a
-CPU-only NAS deployment. On smaller systems, remove the `ollama` and
-`ollama-model` services and point `ENV_MOMENTS_QWEN_URL` at an Ollama instance
-running on another trusted machine.
+CPU-only NAS deployment. On smaller systems, remove the `ollama` and both
+`ollama-*-model` services, remove their `server.depends_on` entries, and point
+`ENV_MOMENTS_QWEN_URL` at an Ollama instance running on another trusted
+machine.
 
 ### 2. Configure the project
 
@@ -58,10 +59,10 @@ include `null` under normal operation.
 
 In DSM, open **Container Manager > Project > Create**, choose the Compose file,
 and use `next-gallery-server` as the project name. Review the generated project
-and start it. On the first deployment, `ollama-model` downloads
-`qwen3-vl:4b`; this is several gigabytes and must finish before `server` starts.
-Wait for `postgres`, `ollama`, and `server` to report healthy and for
-`ollama-model` to exit successfully.
+and start it. On the first deployment, `ollama-vision-model` and
+`ollama-text-model` download `qwen3-vl:4b` and `qwen3:4b`; both jobs must finish
+before `server` starts. Wait for `postgres`, `ollama`, and `server` to report
+healthy and for both model jobs to exit successfully.
 
 The Synology Compose file contains all settings and does not require a `.env`
 file. As an alternative, deploy it from SSH while in the repository directory:
@@ -75,7 +76,7 @@ The `server` service uses the release-managed `latest` image. Publish a new
 repository release containing the Moments implementation before deploying this
 configuration to a remote NAS; the image publishing workflow updates that tag.
 
-Verify that the model is installed and reachable from the application network:
+Verify that both models are installed and reachable from the application network:
 
 ```sh
 docker compose -f build/compose.synology.yaml exec ollama ollama list
@@ -122,8 +123,8 @@ processing runs before imported media becomes eligible for automatic albums,
 which group media by capture date when that metadata is available.
 
 Images are published for `linux/amd64` and `linux/arm64`. The application image
-includes FFmpeg for later thumbnail and preview processing and runs as a
-non-root user.
+includes FFmpeg, OpenCV, and `/app/moments-cv-worker`, and runs as a non-root
+user.
 
 ## Moments
 
@@ -136,7 +137,9 @@ belong to only one Moment.
 The Synology Compose project runs Ollama only on its internal network and keeps
 model data under `/volume1/docker/next-gallery-server/ollama`. Ollama port
 `11434` is not published on the NAS host. Change `ENV_MOMENTS_INTERVAL` to
-control background generation; `168h` runs it weekly.
+control background generation; `168h` runs it weekly. The embedding endpoint is
+disabled by default; set `ENV_MOMENTS_EMBEDDING_URL` only when a compatible
+private SigLIP/CLIP service is available.
 
 ## Reverse proxy
 

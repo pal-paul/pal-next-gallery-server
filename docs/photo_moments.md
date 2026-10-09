@@ -16,27 +16,27 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 
 ## 2. Production Status
 
-| Capability | Status | Production behavior | Follow-up |
-| --- | --- | --- | --- |
-| Resumable upload | Implemented | Authenticated chunked uploads are assembled, SHA-256 verified, and persisted | None for the moment pipeline |
-| Processing queue | Implemented | PostgreSQL queue with atomic claims, stale-claim recovery, retries, and manual retry | Add metrics and dead-letter alerting |
-| Metadata and thumbnails | Implemented | `ffprobe` extracts technical metadata and `ffmpeg` creates bounded JPEG thumbnails | Physically rotate pixels if a consumer ignores orientation metadata |
-| Exact duplicates | Implemented | Owner-scoped SHA-256 checks reject duplicate upload creation | Add a retain-and-review mode if desired |
-| Near duplicates | Implemented | Persisted dHash values create owner-scoped groups at Hamming distance `<= 5` | Add duplicate review UI |
-| Image embeddings | Optional | An HTTP provider returns versioned vectors stored in PostgreSQL | Add an ANN index when bounded scans are insufficient |
-| Visual clustering | Optional | An external OpenCV executable performs similarity scoring and mutual-reachability MST clustering | Package the worker in the production image; consider canonical HDBSCAN if needed |
-| Temporal clustering fallback | Implemented | Without the OpenCV worker, candidates are split at 30-minute gaps | This is less accurate than the full profile |
-| Representative selection | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images | Tune weights against labeled collections |
-| Structured image descriptions | Optional | Qwen-VL describes each selected semantic image and results are persisted | Add explicit prompt/schema version values |
-| Metadata synthesis | Optional | A separate Qwen3 text request creates title, description, and confidence | Add independent retryable AI jobs |
-| Moment persistence | Implemented | Advisory locking and one transaction prevent duplicate ownership assignment | None |
-| Deterministic moment creation without AI | Gap | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured | Add deterministic title/description fallback |
+| Capability                               | Status                   | Production behavior                                                                                                        | Follow-up                                                           |
+| ---------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Resumable upload                         | Implemented              | Authenticated chunked uploads are assembled, SHA-256 verified, and persisted                                               | None for the moment pipeline                                        |
+| Processing queue                         | Implemented              | PostgreSQL queue with atomic claims, stale-claim recovery, retries, and manual retry                                       | Add metrics and dead-letter alerting                                |
+| Metadata and thumbnails                  | Implemented              | `ffprobe` extracts technical metadata and `ffmpeg` creates bounded JPEG thumbnails                                         | Physically rotate pixels if a consumer ignores orientation metadata |
+| Exact duplicates                         | Implemented              | Owner-scoped SHA-256 checks reject duplicate upload creation                                                               | Add a retain-and-review mode if desired                             |
+| Near duplicates                          | Implemented              | Persisted dHash values create owner-scoped groups at Hamming distance `<= 5`                                               | Add duplicate review UI                                             |
+| Image embeddings                         | Optional                 | An HTTP provider returns versioned vectors stored in PostgreSQL                                                            | Add an ANN index when bounded scans are insufficient                |
+| Visual clustering                        | Optional                 | The production image packages an OpenCV executable that performs similarity scoring and mutual-reachability MST clustering | Consider canonical HDBSCAN if needed                                |
+| Temporal clustering fallback             | Implemented              | Without the OpenCV worker, candidates are split at 30-minute gaps                                                          | This is less accurate than the full profile                         |
+| Representative selection                 | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images                                                       | Tune weights against labeled collections                            |
+| Structured image descriptions            | Optional                 | Qwen-VL describes each selected semantic image and results are persisted                                                   | Add explicit prompt/schema version values                           |
+| Metadata synthesis                       | Optional                 | A separate Qwen3 text request creates title, description, and confidence                                                   | Add independent retryable AI jobs                                   |
+| Moment persistence                       | Implemented              | Advisory locking and one transaction prevent duplicate ownership assignment                                                | None                                                                |
+| Deterministic moment creation without AI | Gap                      | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured            | Add deterministic title/description fallback                        |
 
 ### Important deployment reality
 
-The generic Docker image currently builds only `cmd/server`. The OpenCV worker must be built separately with `-tags opencv` and exposed through `ENV_MOMENTS_CV_WORKER` before the full visual pipeline is active.
+The production image builds the OpenCV worker with CGO and exposes it at `/app/moments-cv-worker`. Both Compose files configure that path and initialize the Qwen vision and text models before starting the server.
 
-The Synology Compose file currently pulls `qwen3-vl:4b`, but the two-stage pipeline also expects the text model configured by `ENV_MOMENTS_QWEN_TEXT_MODEL` (default `qwen3:4b`). The embedding provider is a separate HTTP service and is not included in either Compose file.
+The embedding provider remains a separate HTTP service and is not included in either Compose file. Leave `ENV_MOMENTS_EMBEDDING_URL` empty to use histogram similarity, or configure a compatible private endpoint to enable versioned SigLIP/CLIP vectors.
 
 ## 3. Production Profiles
 
@@ -108,14 +108,14 @@ flowchart TB
 
 ### Ownership boundaries
 
-| Component | Owns | Must not own |
-| --- | --- | --- |
-| Go server | HTTP, authentication, scheduling, orchestration, filesystem safety | Long-term model state |
-| PostgreSQL | Durable metadata, queues, relations, generated records | Original media bytes |
-| Media volume | Original files and generated thumbnails | Queue state |
-| OpenCV worker | Per-run features, clustering, representative scores | Durable records |
-| Embedding service | Vector inference | Photo persistence |
-| Qwen service | Structured visual and text inference | Permanent photo storage |
+| Component         | Owns                                                               | Must not own            |
+| ----------------- | ------------------------------------------------------------------ | ----------------------- |
+| Go server         | HTTP, authentication, scheduling, orchestration, filesystem safety | Long-term model state   |
+| PostgreSQL        | Durable metadata, queues, relations, generated records             | Original media bytes    |
+| Media volume      | Original files and generated thumbnails                            | Queue state             |
+| OpenCV worker     | Per-run features, clustering, representative scores                | Durable records         |
+| Embedding service | Vector inference                                                   | Photo persistence       |
+| Qwen service      | Structured visual and text inference                               | Permanent photo storage |
 
 ## 5. End-to-End Production Flow
 
@@ -493,14 +493,14 @@ erDiagram
 
 ## 12. Scheduling and Triggers
 
-| Trigger | Default | Behavior |
-| --- | --- | --- |
-| Processing worker | Continuous | Drains queued jobs; waits five seconds when idle |
-| Moment generation | Every `168h` | Runs for all users after each interval tick |
-| Manual generation | `POST /moments/generate` | Runs immediately for the authenticated owner |
-| Automatic albums | Daily at `02:00` local time | Separate feature; reconciles albums, not moments |
-| NAS import | Same daily schedule when configured | Discovers imported media before normal processing |
-| Cleanup | Every `1h` | Cleans expired sessions and abandoned uploads |
+| Trigger           | Default                             | Behavior                                          |
+| ----------------- | ----------------------------------- | ------------------------------------------------- |
+| Processing worker | Continuous                          | Drains queued jobs; waits five seconds when idle  |
+| Moment generation | Every `168h`                        | Runs for all users after each interval tick       |
+| Manual generation | `POST /moments/generate`            | Runs immediately for the authenticated owner      |
+| Automatic albums  | Daily at `02:00` local time         | Separate feature; reconciles albums, not moments  |
+| NAS import        | Same daily schedule when configured | Discovers imported media before normal processing |
+| Cleanup           | Every `1h`                          | Cleans expired sessions and abandoned uploads     |
 
 The moment scheduler does not run immediately at startup. Operators can use the manual endpoint for an initial run or wait for the first interval.
 
@@ -508,40 +508,40 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 
 ### Required core settings
 
-| Variable | Purpose |
-| --- | --- |
-| `ENV_DATABASE_URL` | PostgreSQL connection URL |
-| `ENV_MEDIA_DIR` | Persistent originals and thumbnails |
-| `ENV_TMP_DIR` | Resumable upload state and chunks |
-| `ENV_PORT` | HTTP listen port |
+| Variable             | Purpose                               |
+| -------------------- | ------------------------------------- |
+| `ENV_DATABASE_URL`   | PostgreSQL connection URL             |
+| `ENV_MEDIA_DIR`      | Persistent originals and thumbnails   |
+| `ENV_TMP_DIR`        | Resumable upload state and chunks     |
+| `ENV_PORT`           | HTTP listen port                      |
 | `ENV_ADMIN_USERNAME` | One-time setup authorization username |
 | `ENV_ADMIN_PASSWORD` | One-time setup authorization password |
 
 ### Moment pipeline settings
 
-| Variable | Default | Effect when empty |
-| --- | --- | --- |
-| `ENV_MOMENTS_INTERVAL` | `168h` | Invalid or non-positive values stop startup |
-| `ENV_MOMENTS_CV_WORKER` | empty | Uses temporal clustering |
-| `ENV_MOMENTS_EMBEDDING_URL` | empty | Skips embeddings; CV falls back to histogram similarity |
-| `ENV_MOMENTS_EMBEDDING_MODEL` | `siglip` | Sent to the embedding provider |
-| `ENV_MOMENTS_QWEN_URL` | empty | Automatic moment creation is skipped |
-| `ENV_MOMENTS_QWEN_MODEL` | `qwen3-vl:4b` | Vision model identifier |
-| `ENV_MOMENTS_QWEN_TEXT_MODEL` | `qwen3:4b` | Text synthesis model identifier |
+| Variable                      | Default       | Effect when empty                                       |
+| ----------------------------- | ------------- | ------------------------------------------------------- |
+| `ENV_MOMENTS_INTERVAL`        | `168h`        | Invalid or non-positive values stop startup             |
+| `ENV_MOMENTS_CV_WORKER`       | empty         | Uses temporal clustering                                |
+| `ENV_MOMENTS_EMBEDDING_URL`   | empty         | Skips embeddings; CV falls back to histogram similarity |
+| `ENV_MOMENTS_EMBEDDING_MODEL` | `siglip`      | Sent to the embedding provider                          |
+| `ENV_MOMENTS_QWEN_URL`        | empty         | Automatic moment creation is skipped                    |
+| `ENV_MOMENTS_QWEN_MODEL`      | `qwen3-vl:4b` | Vision model identifier                                 |
+| `ENV_MOMENTS_QWEN_TEXT_MODEL` | `qwen3:4b`    | Text synthesis model identifier                         |
 
 ### Fixed algorithm values
 
 These values are currently compile-time constants:
 
-| Setting | Value |
-| --- | --- |
-| Candidate window | 7 days |
-| Temporal fallback gap | 30 minutes |
-| Minimum group size | 3 images |
-| Maximum semantic images | 15 |
-| Minimum synthesis confidence | 0.65 |
-| Near-duplicate dHash distance | 5 bits |
-| CV similarity threshold | 0.62 |
+| Setting                       | Value      |
+| ----------------------------- | ---------- |
+| Candidate window              | 7 days     |
+| Temporal fallback gap         | 30 minutes |
+| Minimum group size            | 3 images   |
+| Maximum semantic images       | 15         |
+| Minimum synthesis confidence  | 0.65       |
+| Near-duplicate dHash distance | 5 bits     |
+| CV similarity threshold       | 0.62       |
 
 ## 14. Production Deployment Checklist
 
@@ -555,8 +555,7 @@ These values are currently compile-time constants:
 
 ### Full intelligence profile
 
-- Build `cmd/moments-cv-worker` with `CGO_ENABLED=1` and `-tags opencv` against compatible OpenCV libraries.
-- Place the worker in the server container or on the same host filesystem and set `ENV_MOMENTS_CV_WORKER` to its executable path.
+- Verify `/app/moments-cv-worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
 - Ensure the worker can read the same media paths as the server.
 - Deploy the embedding endpoint before setting `ENV_MOMENTS_EMBEDDING_URL`.
 - Pull both the vision and text Qwen models.
@@ -600,13 +599,13 @@ The server currently emits structured JSON logs. Production monitoring should de
 
 Recommended alerts:
 
-| Condition | Initial threshold |
-| --- | --- |
-| Failed processing jobs | Any sustained increase |
-| Oldest queued job | Older than 30 minutes |
-| Readiness failure | Two consecutive checks |
-| Model endpoint failure rate | More than 10% over 15 minutes |
-| Moment scheduler | No successful run for twice the configured interval |
+| Condition                       | Initial threshold                                     |
+| ------------------------------- | ----------------------------------------------------- |
+| Failed processing jobs          | Any sustained increase                                |
+| Oldest queued job               | Older than 30 minutes                                 |
+| Readiness failure               | Two consecutive checks                                |
+| Model endpoint failure rate     | More than 10% over 15 minutes                         |
+| Moment scheduler                | No successful run for twice the configured interval   |
 | Free media or temporary storage | Below `ENV_MIN_DISK_FREE_BYTES` plus operating margin |
 
 ## 16. Scaling Model
@@ -637,36 +636,36 @@ Recommended alerts:
 
 ## 17. Failure and Recovery Matrix
 
-| Failure | Current result | Recovery |
-| --- | --- | --- |
-| Server restarts during upload | Chunks and metadata remain in temporary storage | Resume upload before retention cleanup |
-| Server restarts during processing | A job may remain `processing` | Reclaimed after 15 minutes |
-| `ffprobe`, `ffmpeg`, dHash, or embedding fails | Job retries, then becomes failed on attempt 3 | Fix dependency and use admin retry |
-| OpenCV worker exits or returns invalid IDs | Current moment run fails for the owner | Fix worker and rerun generation |
-| One vision request fails | Current group is skipped | Rerun generation; no durable AI retry yet |
-| Text synthesis fails | Descriptions remain, no moment is created | Rerun generation |
-| Confidence below 0.65 | Group is intentionally skipped | Tune model/prompt or review threshold in code |
-| Concurrent assignment wins elsewhere | Transaction returns already assigned | No action required |
-| PostgreSQL unavailable | Readiness and database operations fail | Restore database connectivity; durable state remains in PostgreSQL |
-| Media path missing | Processing or enrichment fails | Restore file or repair the database/file relationship |
+| Failure                                        | Current result                                  | Recovery                                                           |
+| ---------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------ |
+| Server restarts during upload                  | Chunks and metadata remain in temporary storage | Resume upload before retention cleanup                             |
+| Server restarts during processing              | A job may remain `processing`                   | Reclaimed after 15 minutes                                         |
+| `ffprobe`, `ffmpeg`, dHash, or embedding fails | Job retries, then becomes failed on attempt 3   | Fix dependency and use admin retry                                 |
+| OpenCV worker exits or returns invalid IDs     | Current moment run fails for the owner          | Fix worker and rerun generation                                    |
+| One vision request fails                       | Current group is skipped                        | Rerun generation; no durable AI retry yet                          |
+| Text synthesis fails                           | Descriptions remain, no moment is created       | Rerun generation                                                   |
+| Confidence below 0.65                          | Group is intentionally skipped                  | Tune model/prompt or review threshold in code                      |
+| Concurrent assignment wins elsewhere           | Transaction returns already assigned            | No action required                                                 |
+| PostgreSQL unavailable                         | Readiness and database operations fail          | Restore database connectivity; durable state remains in PostgreSQL |
+| Media path missing                             | Processing or enrichment fails                  | Restore file or repair the database/file relationship              |
 
 ## 18. API Surface for Moments
 
 All routes require an authenticated session.
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `GET` | `/moments` | List the current user's moments |
-| `POST` | `/moments/generate` | Run generation immediately for the current user |
-| `GET` | `/moments/:id` | Get a moment and ordered media |
-| `PATCH` | `/moments/:id` | Update title, description, or status |
-| `DELETE` | `/moments/:id` | Delete the moment, not its media |
-| `POST` | `/moments/:id/media` | Add accessible image media |
-| `DELETE` | `/moments/:id/media/:mediaID` | Remove media while preserving at least one member |
-| `PATCH` | `/moments/:id/cover` | Select a member as cover |
-| `GET` | `/media/files/:id/processing-status` | Read media processing status |
-| `GET` | `/admin/processing-jobs` | Inspect recent jobs as an administrator |
-| `POST` | `/admin/processing-jobs/:id/retry` | Retry a failed processing job |
+| Method   | Route                                | Purpose                                           |
+| -------- | ------------------------------------ | ------------------------------------------------- |
+| `GET`    | `/moments`                           | List the current user's moments                   |
+| `POST`   | `/moments/generate`                  | Run generation immediately for the current user   |
+| `GET`    | `/moments/:id`                       | Get a moment and ordered media                    |
+| `PATCH`  | `/moments/:id`                       | Update title, description, or status              |
+| `DELETE` | `/moments/:id`                       | Delete the moment, not its media                  |
+| `POST`   | `/moments/:id/media`                 | Add accessible image media                        |
+| `DELETE` | `/moments/:id/media/:mediaID`        | Remove media while preserving at least one member |
+| `PATCH`  | `/moments/:id/cover`                 | Select a member as cover                          |
+| `GET`    | `/media/files/:id/processing-status` | Read media processing status                      |
+| `GET`    | `/admin/processing-jobs`             | Inspect recent jobs as an administrator           |
+| `POST`   | `/admin/processing-jobs/:id/retry`   | Retry a failed processing job                     |
 
 ## 19. Acceptance Checks
 

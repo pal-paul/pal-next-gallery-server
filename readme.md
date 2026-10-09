@@ -27,11 +27,15 @@ cp .env.example .env
 only by the one-time `/setup` form; they are never stored as an account. The
 bootstrap password must contain at least 12 characters.
 
-Start the API and PostgreSQL:
+Start PostgreSQL, Ollama, the model initialization jobs, and the application:
 
 ```bash
 docker compose --env-file .env -f build/compose.yaml up --build
 ```
+
+The first run downloads both Qwen models before the application starts. Allow
+roughly 8 GB for model storage and at least 8 GB of Docker memory for local
+inference. The OpenCV Moments worker is included in the application image.
 
 The example configuration exposes the gallery and API at
 `http://127.0.0.1:8081`. Change `ENV_PORT` in `.env` if that port is occupied.
