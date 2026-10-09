@@ -70,6 +70,11 @@ func (repository *testRepository) ListMoments(context.Context, string) ([]Moment
 	return repository.created, nil
 }
 func (repository *testRepository) GetMoment(_ context.Context, id, ownerID string) (Moment, error) {
+	for _, moment := range repository.created {
+		if moment.ID == id && moment.OwnerID == ownerID {
+			return moment, nil
+		}
+	}
 	return Moment{ID: id, OwnerID: ownerID}, nil
 }
 func (repository *testRepository) UpdateMoment(_ context.Context, id, ownerID, title, description, status string) error {
@@ -100,6 +105,16 @@ func (repository *testRepository) CreateGeneratedMoment(_ context.Context, momen
 	repository.created = append(repository.created, moment)
 	repository.groups = append(repository.groups, candidates)
 	return nil
+}
+func (repository *testRepository) CreateMoment(_ context.Context, moment Moment, _ []string) error {
+	repository.created = append(repository.created, moment)
+	return nil
+}
+func (repository *testRepository) ListMomentMetadataCandidates(context.Context, string, string, int) ([]Candidate, error) {
+	return repository.candidates, nil
+}
+func (repository *testRepository) ListAlbumMetadataCandidates(context.Context, string, string, int) ([]Candidate, error) {
+	return repository.candidates, nil
 }
 
 func TestGenerateCreatesTimeBasedMomentsAndLeavesSingletons(t *testing.T) {
@@ -165,6 +180,44 @@ func TestUpdateMarksAuthenticatedUsersMoment(t *testing.T) {
 	if repository.updated.OwnerID != "user-1" || repository.updated.Title != "Summer day" ||
 		repository.updated.Description != "By the water" || repository.updated.Status != "published" {
 		t.Fatalf("unexpected update: %#v", repository.updated)
+	}
+}
+
+func TestCreateMakesManualDraft(t *testing.T) {
+	repository := &testRepository{}
+	router := testRouter(repository)
+	request := httptest.NewRequest(http.MethodPost, "/moments",
+		bytes.NewBufferString(`{"title":"  Weekend walk  ","description":"  Near the lake  ","mediaIds":["one","two"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated || len(repository.created) != 1 {
+		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	}
+	created := repository.created[0]
+	if created.OwnerID != "user-1" || created.Title != "Weekend walk" || created.Description != "Near the lake" || created.Status != "draft" {
+		t.Fatalf("unexpected manual moment: %#v", created)
+	}
+}
+
+func TestAIFeaturesCanBeDisabled(t *testing.T) {
+	repository := &testRepository{}
+	router := testRouterWithService(New(repository, WithAIFeaturesEnabled(false)))
+	for _, path := range []string{"/moments/generate", "/moments/moment-1/metadata-suggestion", "/albums/album-1/metadata-suggestion"} {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected disabled response for %s, got %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/features", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != `{"ai":false}` {
+		t.Fatalf("unexpected features response %d: %s", response.Code, response.Body.String())
 	}
 }
 

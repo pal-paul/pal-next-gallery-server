@@ -23,6 +23,7 @@ const (
 	MinimumMomentImages     = 3
 	MinimumDescriptionMatch = 0.65
 	MaximumSemanticImages   = 15
+	MetadataSampleSize      = 6
 )
 
 var (
@@ -80,6 +81,9 @@ type Repository interface {
 	ListImageDescriptions(context.Context, []string) ([]ImageDescription, error)
 	SaveImageDescriptions(context.Context, []ImageDescription) error
 	CreateGeneratedMoment(context.Context, Moment, []Candidate) error
+	CreateMoment(context.Context, Moment, []string) error
+	ListMomentMetadataCandidates(context.Context, string, string, int) ([]Candidate, error)
+	ListAlbumMetadataCandidates(context.Context, string, string, int) ([]Candidate, error)
 }
 
 type Service struct {
@@ -88,10 +92,11 @@ type Service struct {
 	enricher    Enricher
 	describer   ImageDescriber
 	synthesizer MetadataSynthesizer
+	aiEnabled   bool
 }
 
 func New(repository Repository, options ...Option) *Service {
-	service := &Service{repository: repository, clusterer: temporalClusterer{gap: SessionGap}}
+	service := &Service{repository: repository, clusterer: temporalClusterer{gap: SessionGap}, aiEnabled: true}
 	for _, option := range options {
 		option(service)
 	}
@@ -100,13 +105,71 @@ func New(repository Repository, options ...Option) *Service {
 
 func RegisterRoutes(router gin.IRoutes, service *Service) {
 	router.GET("/moments", service.List)
+	router.POST("/moments", service.Create)
 	router.POST("/moments/generate", service.Generate)
+	router.GET("/features", service.Features)
 	router.GET("/moments/:id", service.Get)
 	router.PATCH("/moments/:id", service.Update)
 	router.DELETE("/moments/:id", service.Delete)
+	router.POST("/moments/:id/metadata-suggestion", service.SuggestMomentMetadata)
+	router.POST("/albums/:id/metadata-suggestion", service.SuggestAlbumMetadata)
 	router.POST("/moments/:id/media", service.AddMedia)
 	router.DELETE("/moments/:id/media/:mediaID", service.RemoveMedia)
 	router.PATCH("/moments/:id/cover", service.SetCover)
+}
+
+func (service *Service) Features(ctx *gin.Context) {
+	ctx.JSON(http.StatusOK, gin.H{"ai": service.aiAvailable()})
+}
+
+func (service *Service) Create(ctx *gin.Context) {
+	var request struct {
+		Title       string   `json:"title"`
+		Description string   `json:"description"`
+		MediaIDs    []string `json:"mediaIds"`
+	}
+	if ctx.ShouldBindJSON(&request) != nil || len(request.MediaIDs) == 0 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "at least one mediaId is required"})
+		return
+	}
+	request.MediaIDs = uniqueMediaIDs(request.MediaIDs)
+	if len(request.MediaIDs) == 0 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "at least one mediaId is required"})
+		return
+	}
+	title := strings.TrimSpace(request.Title)
+	if title == "" {
+		title = "Untitled moment"
+	}
+	moment := Moment{ID: uuid.NewString(), OwnerID: currentUser(ctx).ID, Title: title,
+		Description: strings.TrimSpace(request.Description), Status: "draft", UserEdited: true}
+	if err := service.repository.CreateMoment(ctx, moment, request.MediaIDs); err != nil {
+		respond(ctx, nil, err)
+		return
+	}
+	created, err := service.repository.GetMoment(ctx, moment.ID, moment.OwnerID)
+	if err != nil {
+		respond(ctx, nil, err)
+		return
+	}
+	ctx.JSON(http.StatusCreated, created)
+}
+
+func uniqueMediaIDs(mediaIDs []string) []string {
+	seen := make(map[string]struct{}, len(mediaIDs))
+	unique := make([]string, 0, len(mediaIDs))
+	for _, mediaID := range mediaIDs {
+		mediaID = strings.TrimSpace(mediaID)
+		if mediaID == "" {
+			continue
+		}
+		if _, exists := seen[mediaID]; exists {
+			continue
+		}
+		seen[mediaID] = struct{}{}
+		unique = append(unique, mediaID)
+	}
+	return unique
 }
 
 func (service *Service) List(ctx *gin.Context) {
@@ -166,6 +229,10 @@ func (service *Service) SetCover(ctx *gin.Context) {
 }
 
 func (service *Service) Generate(ctx *gin.Context) {
+	if !service.aiEnabled {
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI features are disabled"})
+		return
+	}
 	ownerID := currentUser(ctx).ID
 	created, err := service.generateForOwner(ctx, ownerID)
 	if err != nil {
@@ -173,6 +240,79 @@ func (service *Service) Generate(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, gin.H{"created": created})
+}
+
+func (service *Service) SuggestMomentMetadata(ctx *gin.Context) {
+	candidates, err := service.repository.ListMomentMetadataCandidates(ctx, ctx.Param("id"), currentUser(ctx).ID, MetadataSampleSize)
+	service.respondMetadataSuggestion(ctx, candidates, err)
+}
+
+func (service *Service) SuggestAlbumMetadata(ctx *gin.Context) {
+	candidates, err := service.repository.ListAlbumMetadataCandidates(ctx, ctx.Param("id"), currentUser(ctx).ID, MetadataSampleSize)
+	service.respondMetadataSuggestion(ctx, candidates, err)
+}
+
+func (service *Service) respondMetadataSuggestion(ctx *gin.Context, candidates []Candidate, err error) {
+	if !service.aiAvailable() {
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI features are disabled"})
+		return
+	}
+	if err != nil {
+		respond(ctx, nil, err)
+		return
+	}
+	if len(candidates) == 0 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "at least one image is required"})
+		return
+	}
+	descriptions, err := service.describeCandidates(ctx, candidates)
+	if err != nil {
+		respond(ctx, nil, err)
+		return
+	}
+	metadata, err := service.synthesizer.Synthesize(ctx, generatedMoment(currentUser(ctx).ID, candidates), descriptions)
+	if err != nil {
+		respond(ctx, nil, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, metadata)
+}
+
+func (service *Service) describeCandidates(ctx context.Context, candidates []Candidate) ([]ImageDescription, error) {
+	mediaIDs := make([]string, len(candidates))
+	for index, candidate := range candidates {
+		mediaIDs[index] = candidate.ID
+	}
+	stored, err := service.repository.ListImageDescriptions(ctx, mediaIDs)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]ImageDescription, len(stored))
+	for _, description := range stored {
+		byID[description.MediaID] = description
+	}
+	descriptions := make([]ImageDescription, 0, len(candidates))
+	created := make([]ImageDescription, 0)
+	for _, candidate := range candidates {
+		description, exists := byID[candidate.ID]
+		if !exists {
+			description, err = service.describer.Describe(ctx, candidate)
+			if err != nil {
+				return nil, err
+			}
+			description.MediaID = candidate.ID
+			created = append(created, description)
+		}
+		descriptions = append(descriptions, description)
+	}
+	if len(created) > 0 {
+		err = service.repository.SaveImageDescriptions(ctx, created)
+	}
+	return descriptions, err
+}
+
+func (service *Service) aiAvailable() bool {
+	return service.aiEnabled && service.describer != nil && service.synthesizer != nil
 }
 
 func (service *Service) Run(ctx context.Context) error {

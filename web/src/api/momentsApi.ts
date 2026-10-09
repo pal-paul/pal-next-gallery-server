@@ -2,6 +2,7 @@ import type { Moment } from '../types/gallery'
 import { request, resolveApiUrl } from './apiClient'
 
 type GenerateResult = { created: number }
+export type MetadataSuggestion = { title: string; description: string; confidence: number }
 
 const normalizeMoment = (moment: Moment): Moment => ({
   ...moment,
@@ -17,6 +18,9 @@ const normalizeMoment = (moment: Moment): Moment => ({
 })
 
 export const momentsApi = {
+  features() {
+    return request<{ ai: boolean }>('/features')
+  },
   async list(signal?: AbortSignal) {
     return (await request<Moment[]>('/moments', { signal })).map(normalizeMoment)
   },
@@ -25,5 +29,23 @@ export const momentsApi = {
   },
   generate() {
     return request<GenerateResult>('/moments/generate', { method: 'POST' })
+  },
+  async create(title: string, description: string, mediaIds: string[]) {
+    return normalizeMoment(await request<Moment>('/moments', { method: 'POST', body: JSON.stringify({ title, description, mediaIds }) }))
+  },
+  update(momentId: string, title: string, description: string, status: Moment['status']) {
+    return request<void>(`/moments/${momentId}`, { method: 'PATCH', body: JSON.stringify({ title, description, status }) })
+  },
+  delete(momentId: string) {
+    return request<void>(`/moments/${momentId}`, { method: 'DELETE' })
+  },
+  addMedia(momentId: string, mediaIds: string[]) {
+    return request<void>(`/moments/${momentId}/media`, { method: 'POST', body: JSON.stringify({ mediaIds }) })
+  },
+  removeMedia(momentId: string, mediaId: string) {
+    return request<void>(`/moments/${momentId}/media/${mediaId}`, { method: 'DELETE' })
+  },
+  suggestMetadata(momentId: string) {
+    return request<MetadataSuggestion>(`/moments/${momentId}/metadata-suggestion`, { method: 'POST' })
   },
 }

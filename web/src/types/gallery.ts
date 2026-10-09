@@ -71,5 +71,6 @@ export type Moment = {
   coverMediaId?: GalleryID
   coverUrl?: string
   createdAt: string
+	userEdited?: boolean
   media?: MomentMedia[]
 }

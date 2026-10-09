@@ -47,6 +47,7 @@ type Environment struct {
 	AdminUsername          string `env:"ENV_ADMIN_USERNAME"`
 	AdminPassword          string `env:"ENV_ADMIN_PASSWORD"`
 	AdminConfig            string `env:"ENV_ADMIN_CONFIG,default=YES"`
+	AIFeature              string `env:"ENV_AI_FEATURE,default=YES"`
 	WebDir                 string `env:"ENV_WEB_DIR,default=./web/dist"`
 	MediaDir               string `env:"ENV_MEDIA_DIR,default=./vol/medias"`
 	TmpDir                 string `env:"ENV_TMP_DIR,default=./vol/tmp"`
@@ -127,7 +128,11 @@ func run() error {
 	}
 
 	authService := auth.NewService(database, envVar.Issuer, auth.WithTrustedProxies(trustedProxies))
-	adminConfigEnabled, err := parseYesNo(envVar.AdminConfig)
+	adminConfigEnabled, err := parseYesNo("ENV_ADMIN_CONFIG", envVar.AdminConfig)
+	if err != nil {
+		return err
+	}
+	aiEnabled, err := parseYesNo("ENV_AI_FEATURE", envVar.AIFeature)
 	if err != nil {
 		return err
 	}
@@ -166,12 +171,12 @@ func run() error {
 	}
 	userService := userapp.NewService(database, envVar.Issuer, envVar.MediaDir)
 	galleryService := gallery.NewService(database, envVar.MediaDir)
-	momentOptions := make([]moments.Option, 0, 2)
-	if worker := strings.TrimSpace(envVar.MomentsCVWorker); worker != "" {
+	momentOptions := []moments.Option{moments.WithAIFeaturesEnabled(aiEnabled)}
+	if worker := strings.TrimSpace(envVar.MomentsCVWorker); aiEnabled && worker != "" {
 		momentOptions = append(momentOptions, moments.WithClusterer(moments.NewCommandClusterer(worker, envVar.MediaDir)))
 		slog.Info("visual moment clustering enabled", "worker", worker)
 	}
-	if apiKey := strings.TrimSpace(envVar.MomentsGeminiAPIKey); apiKey != "" {
+	if apiKey := strings.TrimSpace(envVar.MomentsGeminiAPIKey); aiEnabled && apiKey != "" {
 		enricher, err := moments.NewGeminiPipeline(envVar.MomentsGeminiURL, apiKey, envVar.MomentsGeminiModel, envVar.MomentsGeminiTextModel, envVar.MediaDir)
 		if err != nil {
 			return fmt.Errorf("configure moment metadata enrichment: %w", err)
@@ -186,7 +191,7 @@ func run() error {
 		return fmt.Errorf("create operations service: %w", err)
 	}
 	processingOptions := make([]processing.Option, 0, 1)
-	if endpoint := strings.TrimSpace(envVar.MomentsEmbeddingURL); endpoint != "" {
+	if endpoint := strings.TrimSpace(envVar.MomentsEmbeddingURL); aiEnabled && endpoint != "" {
 		embedder, err := processing.NewHTTPImageEmbedder(endpoint, envVar.MomentsEmbeddingModel)
 		if err != nil {
 			return fmt.Errorf("configure image embeddings: %w", err)
@@ -272,10 +277,12 @@ func run() error {
 	defer stopScheduler()
 	go processingService.Run(schedulerCtx)
 	go trashService.Run(schedulerCtx)
-	go momentsService.RunScheduled(schedulerCtx, momentsInterval, func(err error) {
-		slog.Error("moment generation failed", "error", err)
-	})
-	slog.Info("moment generation scheduled", "interval", momentsInterval)
+	if aiEnabled {
+		go momentsService.RunScheduled(schedulerCtx, momentsInterval, func(err error) {
+			slog.Error("moment generation failed", "error", err)
+		})
+		slog.Info("moment generation scheduled", "interval", momentsInterval)
+	}
 	if nasImportService != nil {
 		go nasImportService.RunScheduled(schedulerCtx, autoAlbumSchedule, func(err error) {
 			slog.Error("NAS media import failed", "error", err)
@@ -372,14 +379,14 @@ func runCleanup(ctx context.Context, service *operations.Service, interval, uplo
 	}
 }
 
-func parseYesNo(value string) (bool, error) {
+func parseYesNo(name, value string) (bool, error) {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case "YES":
 		return true, nil
 	case "NO":
 		return false, nil
 	default:
-		return false, fmt.Errorf("ENV_ADMIN_CONFIG must be YES or NO")
+		return false, fmt.Errorf("%s must be YES or NO", name)
 	}
 }
 

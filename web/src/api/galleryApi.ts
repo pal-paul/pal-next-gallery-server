@@ -1,5 +1,6 @@
 import type { Album, GalleryID, MediaItem, StorageStats } from '../types/gallery'
 import { request, resolveApiUrl } from './apiClient'
+import type { MetadataSuggestion } from './momentsApi'
 
 type ApiMedia = {
   id: GalleryID
@@ -64,6 +65,9 @@ export const galleryApi = {
   },
   updateAlbum(albumId: GalleryID, title: string, description: string) {
     return request<void>(`/albums/${albumId}`, { method: 'PATCH', body: JSON.stringify({ title, description }) })
+  },
+  suggestAlbumMetadata(albumId: GalleryID) {
+    return request<MetadataSuggestion>(`/albums/${albumId}/metadata-suggestion`, { method: 'POST' })
   },
   reorderAlbums(albumIds: GalleryID[]) {
     return request<void>('/albums/order', { method: 'PATCH', body: JSON.stringify({ albumIds }) })

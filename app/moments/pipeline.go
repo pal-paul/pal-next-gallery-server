@@ -46,6 +46,10 @@ type Metadata struct {
 
 type Option func(*Service)
 
+func WithAIFeaturesEnabled(enabled bool) Option {
+	return func(service *Service) { service.aiEnabled = enabled }
+}
+
 func WithClusterer(clusterer Clusterer) Option {
 	return func(service *Service) {
 		if clusterer != nil {
