@@ -30,6 +30,8 @@ export function MomentsView({ moments, activeMoment, loading, onOpen, onBack, on
   const [picked, setPicked] = useState<string[]>([])
   const [pending, setPending] = useState(false)
   const photos = media.filter((item) => item.kind === 'photo' && !item.deletedAt)
+  const draftMoments = moments.filter((moment) => moment.status === 'draft')
+  const curatedMoments = moments.filter((moment) => moment.status !== 'draft')
   const currentIds = new Set(activeMoment?.media?.map((item) => item.id) ?? [])
   const togglePicked = (id: string) => setPicked((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])
   const run = async (action: () => Promise<void>) => { setPending(true); try { await action() } finally { setPending(false) } }
@@ -67,17 +69,41 @@ export function MomentsView({ moments, activeMoment, loading, onOpen, onBack, on
       </header>
     {creating && <section className="moment-editor"><div className="moment-editor-heading"><strong>Create draft moment</strong><button className="icon-button" title="Close" onClick={() => onCreatingChange(false)}><X size={17} /></button></div><label className="field-label">Title<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled moment" /></label><label className="field-label">Description<textarea rows={2} value={description} onChange={(event) => setDescription(event.target.value)} /></label><div className="moment-picker">{photos.map((item) => <button type="button" aria-label={`Select ${item.title}`} className={picked.includes(item.id) ? 'selected' : ''} key={item.id} onClick={() => togglePicked(item.id)}><AuthenticatedImage src={item.thumbnailUrl ?? item.url} alt="" />{picked.includes(item.id) && <span><Check size={14} /></span>}</button>)}</div><div className="moment-editor-actions"><span>{picked.length} selected</span><button className="primary-button" disabled={picked.length === 0 || pending} onClick={() => void run(async () => { await onCreate(title, description, picked); onCreatingChange(false); setPicked([]) })}>Create draft</button></div></section>}
       {loading ? <div className="empty-state"><LoaderCircle className="spin" size={26} /><p>Loading moments</p></div> : (
-        <div className="moment-grid">
-          {moments.map((moment, index) => (
-            <button className="moment-card" key={moment.id} onClick={() => onOpen(moment.id)} style={{ '--delay': `${index * 45}ms` } as CSSProperties}>
-              {moment.coverUrl ? <AuthenticatedImage src={moment.coverUrl} alt="" /> : <span className="empty-cover"><Image size={28} /></span>}
-              <span className="moment-card-copy">
-                <strong>{moment.title}</strong>
-        				{moment.status === 'draft' && <em className="status-badge">Draft</em>}
-                <span><CalendarDays size={13} /> {formatDate(moment.startTime)} <b>·</b> <Images size={13} /> {moment.imageCount}</span>
-              </span>
-            </button>
-          ))}
+        <div className="moment-sections">
+          {draftMoments.length > 0 && <section className="moment-section">
+            <header className="moment-section-header">
+              <div><Sparkles size={16} /><h2>AI suggested</h2></div>
+              <span className="moment-pending-count">{draftMoments.length} pending</span>
+            </header>
+            <div className="moment-grid">
+              {draftMoments.map((moment, index) => (
+                <button className="moment-card" key={moment.id} onClick={() => onOpen(moment.id)} style={{ '--delay': `${index * 45}ms` } as CSSProperties}>
+                  {moment.coverUrl ? <AuthenticatedImage src={moment.coverUrl} alt="" /> : <span className="empty-cover"><Image size={28} /></span>}
+                  <span className="moment-card-copy">
+                    <strong>{moment.title}</strong>
+                    <em className="status-badge">Draft</em>
+                    <span><CalendarDays size={13} /> {formatDate(moment.startTime)} <b>·</b> <Images size={13} /> {moment.imageCount}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>}
+          {curatedMoments.length > 0 && <section className="moment-section">
+            <header className="moment-section-header">
+              <div><Images size={16} /><h2>Curated moments</h2></div>
+            </header>
+            <div className="moment-grid">
+              {curatedMoments.map((moment, index) => (
+                <button className="moment-card" key={moment.id} onClick={() => onOpen(moment.id)} style={{ '--delay': `${(draftMoments.length + index) * 45}ms` } as CSSProperties}>
+                  {moment.coverUrl ? <AuthenticatedImage src={moment.coverUrl} alt="" /> : <span className="empty-cover"><Image size={28} /></span>}
+                  <span className="moment-card-copy">
+                    <strong>{moment.title}</strong>
+                    <span><CalendarDays size={13} /> {formatDate(moment.startTime)} <b>·</b> <Images size={13} /> {moment.imageCount}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>}
         </div>
       )}
       {!loading && moments.length === 0 && <div className="empty-state"><Sparkles size={28} /><h2>No moments yet</h2><p>Find moments after uploading and processing at least three photos.</p></div>}
