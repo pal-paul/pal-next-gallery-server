@@ -249,6 +249,7 @@ func TestCompleteUploadPersistsMedia(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	root := t.TempDir()
 	content := []byte("persisted media")
+	capturedAt := time.Date(2022, time.March, 14, 15, 9, 26, 0, time.UTC)
 	repository := &recordingMediaRepository{}
 	service := newTestService(
 		t,
@@ -258,7 +259,10 @@ func TestCompleteUploadPersistsMedia(t *testing.T) {
 		WithMediaRepository(repository),
 	)
 	router := newTestRouter(t, service)
-	created := createUpload(t, router, fmt.Sprintf(`{"filename":"video.mp4","size":%d}`, len(content)))
+	created := createUpload(t, router, fmt.Sprintf(
+		`{"filename":"video.mp4","size":%d,"capturedAt":%q}`,
+		len(content), capturedAt.Format(time.RFC3339),
+	))
 
 	response := performRequest(router, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewReader(content))
 	if response.Code != http.StatusOK {
@@ -277,6 +281,9 @@ func TestCompleteUploadPersistsMedia(t *testing.T) {
 	}
 	if media.CreatedAt.IsZero() {
 		t.Fatal("expected media completion time to be persisted")
+	}
+	if media.CapturedAt == nil || !media.CapturedAt.Equal(capturedAt) {
+		t.Fatalf("captured time = %v, want %v", media.CapturedAt, capturedAt)
 	}
 }
 

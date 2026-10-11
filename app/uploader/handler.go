@@ -111,7 +111,7 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 	u := &Upload{
 		ID: id, OwnerID: identity.ID, UserFolder: identity.UploadFolder,
 		Filename: filename, MimeType: req.MimeType, Size: req.Size,
-		SHA256: checksum, BatchID: req.BatchID, Chunks: chunks, Created: time.Now().UTC(),
+		SHA256: checksum, BatchID: req.BatchID, Chunks: chunks, Created: time.Now().UTC(), CapturedAt: req.CapturedAt,
 	}
 	s.uploadMux.Lock()
 	defer s.uploadMux.Unlock()
@@ -315,15 +315,16 @@ func (s *service) HandleCompleteUpload(context *gin.Context) {
 	}
 	if s.mediaStore != nil {
 		media := CompletedMedia{
-			UploadID:  u.ID,
-			OwnerID:   u.OwnerID,
-			Filename:  u.Filename,
-			MimeType:  u.MimeType,
-			Size:      total,
-			SHA256:    sum,
-			MediaPath: filepath.ToSlash(u.MediaPath),
-			BatchID:   u.BatchID,
-			CreatedAt: u.Completed,
+			UploadID:   u.ID,
+			OwnerID:    u.OwnerID,
+			Filename:   u.Filename,
+			MimeType:   u.MimeType,
+			Size:       total,
+			SHA256:     sum,
+			MediaPath:  filepath.ToSlash(u.MediaPath),
+			BatchID:    u.BatchID,
+			CreatedAt:  u.Completed,
+			CapturedAt: u.CapturedAt,
 		}
 		if err := s.mediaStore.SaveCompletedMedia(context.Request.Context(), media); err != nil {
 			if removeErr := os.Remove(finalPath); removeErr != nil && !os.IsNotExist(removeErr) {

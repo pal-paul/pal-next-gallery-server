@@ -2230,6 +2230,10 @@ components:
           type: string
           format: uuid
           description: Optional active upload batch owned by the current user.
+        capturedAt:
+          type: string
+          format: date-time
+          description: Optional original media capture time supplied by a trusted client.
     CreateUploadResponse:
       type: object
       additionalProperties: false

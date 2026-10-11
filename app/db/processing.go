@@ -69,7 +69,7 @@ func (store *Postgres) CompleteProcessingJob(ctx context.Context, job processing
 	if _, err := transaction.Exec(ctx, `INSERT INTO media_exif
 		(upload_id, captured_at, latitude, longitude, camera_make, camera_model, orientation, perceptual_hash, raw_exif)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (upload_id) DO UPDATE SET
-		captured_at = EXCLUDED.captured_at, latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude,
+		captured_at = COALESCE(EXCLUDED.captured_at, media_exif.captured_at), latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude,
 		camera_make = EXCLUDED.camera_make, camera_model = EXCLUDED.camera_model,
 		orientation = EXCLUDED.orientation, perceptual_hash = EXCLUDED.perceptual_hash, raw_exif = EXCLUDED.raw_exif`,
 		job.UploadID, metadata.CapturedAt, metadata.Latitude, metadata.Longitude, metadata.CameraMake,
