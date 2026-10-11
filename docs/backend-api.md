@@ -388,8 +388,7 @@ Set `ENV_AI_FEATURE=NO` to disable CLIP embeddings, Gemini providers, scheduled
 and manual AI generation, and AI metadata suggestions. Uploads, manual Moments,
 and Album management continue to work. With AI enabled, a Gemini API key is
 still required for generation and suggestions. Go defaults the vision and text
-models to `gemini-3.5-flash-lite`; the supplied Compose files currently select
-`gemini-2.5-flash-lite`. Operators can override both with
+models to `gemini-3.5-flash-lite`. Operators can override both with
 `ENV_MOMENTS_GEMINI_MODEL` and `ENV_MOMENTS_GEMINI_TEXT_MODEL`.
 
 Gemini is not called when a photo is uploaded or merely added to a Moment or

@@ -573,8 +573,8 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 | `ENV_MOMENTS_EMBEDDING_MODEL`   | `openai/clip-vit-base-patch32`    | CLIP model loaded by the endpoint                                 |
 | `ENV_MOMENTS_GEMINI_API_KEY`    | empty                             | Automatic moment creation is skipped                              |
 | `ENV_MOMENTS_GEMINI_URL`        | Google Gemini API                 | Gemini API base URL                                               |
-| `ENV_MOMENTS_GEMINI_MODEL`      | `gemini-3.5-flash-lite`           | Go default; supplied Compose files select `gemini-2.5-flash-lite` |
-| `ENV_MOMENTS_GEMINI_TEXT_MODEL` | `gemini-3.5-flash-lite`           | Go default; supplied Compose files select `gemini-2.5-flash-lite` |
+| `ENV_MOMENTS_GEMINI_MODEL`      | `gemini-3.5-flash-lite`           | Gemini model used for image descriptions                          |
+| `ENV_MOMENTS_GEMINI_TEXT_MODEL` | `gemini-3.5-flash-lite`           | Gemini model used for metadata synthesis                          |
 
 <!-- markdownlint-enable MD060 -->
 

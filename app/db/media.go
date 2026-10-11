@@ -113,5 +113,12 @@ func (store *Postgres) SaveCompletedMedia(ctx context.Context, media uploader.Co
 		VALUES ($1, $1) ON CONFLICT (upload_id) DO NOTHING`, media.UploadID); err != nil {
 		return err
 	}
+	if media.CapturedAt != nil {
+		if _, err := transaction.Exec(ctx, `INSERT INTO media_exif (upload_id, captured_at)
+			VALUES ($1, $2) ON CONFLICT (upload_id) DO UPDATE SET captured_at = EXCLUDED.captured_at`,
+			media.UploadID, media.CapturedAt); err != nil {
+			return err
+		}
+	}
 	return transaction.Commit(ctx)
 }

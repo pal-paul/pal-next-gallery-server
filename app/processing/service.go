@@ -179,7 +179,7 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 	metadata.CameraMake = firstTag(tags, "make", "camera_make", "com.apple.quicktime.make")
 	metadata.CameraModel = firstTag(tags, "model", "camera_model", "com.apple.quicktime.model")
 	metadata.Orientation = firstTag(tags, "orientation", "rotate")
-	for _, key := range []string{"creation_time", "date", "datetimeoriginal"} {
+	for _, key := range []string{"creation_time", "date", "datetimeoriginal", "com.apple.quicktime.creationdate"} {
 		if value := tags[key]; value != "" {
 			for _, layout := range []string{time.RFC3339, "2006:01:02 15:04:05"} {
 				parsed, parseErr := time.Parse(layout, value)
