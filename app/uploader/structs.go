@@ -35,16 +35,17 @@ type Upload struct {
 }
 
 type CompletedMedia struct {
-	UploadID   string
-	OwnerID    string
-	Filename   string
-	MimeType   string
-	Size       int64
-	SHA256     string
-	MediaPath  string
-	BatchID    string
-	CreatedAt  time.Time
-	CapturedAt *time.Time
+	UploadID       string
+	OwnerID        string
+	Filename       string
+	MimeType       string
+	Size           int64
+	SHA256         string
+	MediaPath      string
+	BatchID        string
+	CreatedAt      time.Time
+	CapturedAt     *time.Time
+	MomentsEnabled *bool
 }
 
 type MediaRepository interface {

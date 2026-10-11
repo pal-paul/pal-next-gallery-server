@@ -1,6 +1,7 @@
-import { BarChart3, EllipsisVertical, Heart, Images, LayoutGrid, LogOut, Map, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { ArchiveRestore, BarChart3, EllipsisVertical, Heart, Images, LayoutGrid, LogOut, Map, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { LibraryView } from '../types/gallery'
+import { TakeoutImportDialog } from './TakeoutImportDialog'
 import { UploadButton } from './UploadButton'
 
 type Props = {
@@ -26,6 +27,7 @@ type Props = {
 
 export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShowMoments, onShowMedia, onShowFavorites, onShowTrash, onShowMap, onShowStorage, onCreateAlbum, onCreateMoment, onFindMoments, aiEnabled, generatingMoments, canUpload, onUploaded, onLogout }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [takeoutOpen, setTakeoutOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const currentLabel = albumTitle ?? (view === 'favorites' ? 'Favorites' : view === 'trash' ? 'Trash' : view === 'map' ? 'Map' : view === 'storage' ? 'Storage' : view === 'media' && !showingAlbum ? 'All' : 'Albums')
 
@@ -69,12 +71,14 @@ export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShow
           <button role="menuitem" onClick={() => selectOption(onCreateMoment)}><Plus size={17} /> New moment</button>
           {aiEnabled && <button role="menuitem" disabled={generatingMoments} onClick={() => selectOption(onFindMoments)}><Sparkles size={17} /> {generatingMoments ? 'Looking...' : 'Find moments'}</button>}
         </> : <button role="menuitem" onClick={() => selectOption(onCreateAlbum)}><Plus size={17} /> New Album</button>}
+                <button role="menuitem" disabled={!canUpload} onClick={() => { setMenuOpen(false); setTakeoutOpen(true) }}><ArchiveRestore size={17} /> Import Google Takeout</button>
                 <button role="menuitem" onClick={() => selectOption(onLogout)}><LogOut size={17} /> Sign out</button>
               </div>
             )}
           </div>
         </div>
       </header>
+      {takeoutOpen && <TakeoutImportDialog onClose={() => setTakeoutOpen(false)} onImported={onUploaded} />}
       <nav className="tabbar" aria-label="Gallery sections">
         <button className={view === 'albums' ? 'active' : ''} onClick={onShowAlbums}><Images /><span>Albums</span></button>
         <button className={view === 'moments' ? 'active' : ''} onClick={onShowMoments}><Sparkles /><span>Moments</span></button>

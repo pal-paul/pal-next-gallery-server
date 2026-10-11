@@ -25,6 +25,7 @@ import (
 	"pal-next-gallery-server/app/processing"
 	"pal-next-gallery-server/app/publicshare"
 	setupapp "pal-next-gallery-server/app/setup"
+	"pal-next-gallery-server/app/takeoutimport"
 	"pal-next-gallery-server/app/transfer"
 	"pal-next-gallery-server/app/trash"
 	uploader "pal-next-gallery-server/app/uploader"
@@ -204,6 +205,10 @@ func run() error {
 	trashService := trash.New(database, envVar.MediaDir)
 	batchService := batch.New(database)
 	transferService := transfer.New(database)
+	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize)
+	if err != nil {
+		return fmt.Errorf("create Google Takeout import service: %w", err)
+	}
 
 	// Setup router
 	gin.SetMode(envVar.Mode)
@@ -266,6 +271,7 @@ func run() error {
 	userRoutes.POST("/media/upload-batches/:id/cancel", batchService.Cancel)
 	userRoutes.GET("/media/export", transferService.Export)
 	userRoutes.POST("/media/import", transferService.Import)
+	takeoutimport.RegisterRoutes(userRoutes, takeoutImportService)
 	userRoutes.GET("/media/files/:id/processing-status", processingService.Status)
 	userRoutes.POST("/media/files/:id/shares", userService.ShareMedia)
 	userRoutes.DELETE("/media/files/:id/shares", userService.UnshareMedia)

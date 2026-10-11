@@ -95,8 +95,8 @@ func (store *Postgres) SaveCompletedMedia(ctx context.Context, media uploader.Co
 		}
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO media_uploads
-		(upload_id, owner_id, filename, mime_type, size, sha256, media_path, batch_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, $9)
+		(upload_id, owner_id, filename, mime_type, size, sha256, media_path, batch_id, created_at, moments_enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid, $9, COALESCE($10::boolean, TRUE))
 		ON CONFLICT (upload_id) DO UPDATE SET
 			owner_id = EXCLUDED.owner_id,
 			filename = EXCLUDED.filename,
@@ -105,8 +105,10 @@ func (store *Postgres) SaveCompletedMedia(ctx context.Context, media uploader.Co
 			sha256 = EXCLUDED.sha256,
 			media_path = EXCLUDED.media_path,
 			batch_id = EXCLUDED.batch_id,
-			created_at = EXCLUDED.created_at`,
-		media.UploadID, media.OwnerID, media.Filename, media.MimeType, media.Size, media.SHA256, media.MediaPath, media.BatchID, media.CreatedAt); err != nil {
+			created_at = EXCLUDED.created_at,
+			moments_enabled = EXCLUDED.moments_enabled`,
+		media.UploadID, media.OwnerID, media.Filename, media.MimeType, media.Size, media.SHA256, media.MediaPath,
+		media.BatchID, media.CreatedAt, media.MomentsEnabled); err != nil {
 		return err
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO media_processing_jobs (id, upload_id)

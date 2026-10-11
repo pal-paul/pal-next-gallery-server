@@ -97,6 +97,7 @@ ALTER TABLE media_uploads ADD COLUMN IF NOT EXISTS width INTEGER;
 ALTER TABLE media_uploads ADD COLUMN IF NOT EXISTS height INTEGER;
 ALTER TABLE media_uploads ADD COLUMN IF NOT EXISTS video_duration_seconds DOUBLE PRECISION;
 ALTER TABLE media_uploads ADD COLUMN IF NOT EXISTS batch_id UUID REFERENCES upload_batches(id) ON DELETE SET NULL;
+ALTER TABLE media_uploads ADD COLUMN IF NOT EXISTS moments_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 UPDATE media_uploads SET owner_id = (
 	SELECT id FROM users WHERE role = 'admin' ORDER BY created_at, id LIMIT 1
 ) WHERE owner_id IS NULL;
@@ -213,6 +214,13 @@ ALTER TABLE albums ADD COLUMN IF NOT EXISTS position INTEGER;
 ALTER TABLE albums ADD COLUMN IF NOT EXISTS cover_media_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS albums_owner_position_idx ON albums(owner_id, position, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS albums_owner_auto_key_idx ON albums(owner_id, auto_key) WHERE auto_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS takeout_albums (
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	source_key TEXT NOT NULL,
+	album_id UUID NOT NULL UNIQUE REFERENCES albums(id) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (owner_id, source_key)
+);
 CREATE TABLE IF NOT EXISTS import_sessions (
 	id UUID PRIMARY KEY,
 	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

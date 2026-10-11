@@ -69,6 +69,27 @@ func TestSchemaCreatesMomentsSeparatelyFromAlbums(t *testing.T) {
 	}
 }
 
+func TestMomentCandidatesRequireMediaOptIn(t *testing.T) {
+	if !strings.Contains(schema, "moments_enabled BOOLEAN NOT NULL DEFAULT TRUE") {
+		t.Fatal("schema does not add moments_enabled with a backward-compatible default")
+	}
+	if !strings.Contains(momentCandidatesQuery, "media.moments_enabled = TRUE") {
+		t.Fatal("moment candidates do not enforce media opt-in")
+	}
+}
+
+func TestSchemaCreatesTakeoutAlbumMappings(t *testing.T) {
+	for _, statement := range []string{
+		"CREATE TABLE IF NOT EXISTS takeout_albums",
+		"PRIMARY KEY (owner_id, source_key)",
+		"album_id UUID NOT NULL UNIQUE REFERENCES albums(id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(schema, statement) {
+			t.Errorf("Takeout schema does not contain %q", statement)
+		}
+	}
+}
+
 func TestSchemaPersistsPreprocessingAnalysis(t *testing.T) {
 	for _, statement := range []string{
 		"camera_make TEXT NOT NULL DEFAULT ''",

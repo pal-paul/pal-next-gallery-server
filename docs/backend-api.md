@@ -254,7 +254,7 @@ flowchart TD
   A --> AO["Jobs and operations<br/>/admin/processing-jobs*, /admin/operations/*"]
   R --> G["Gallery and albums<br/>/media, /albums/*, /storage"]
   R --> P["Public link management<br/>/media/public-links*"]
-  R --> T["Metadata transfer<br/>/media/export, /media/import"]
+  R --> T["Import and transfer<br/>/media/export, /media/import<br/>/media/import/google-takeout"]
   P --> X["Unauthenticated recipient<br/>/public/{token}<br/>/public/{token}/download"]
 ```
 
@@ -299,11 +299,38 @@ for complete request and response schemas.
 | `GET`    | `/public/{token}/download`              | Public             | Download linked media or an album ZIP.                           |
 | `GET`    | `/media/export`                         | Regular user       | Export versioned media and album metadata.                       |
 | `POST`   | `/media/import`                         | Regular user       | Import manual albums for currently owned media.                  |
+| `POST`   | `/media/import/google-takeout`          | Regular user       | Import media and albums from one Google Takeout ZIP.             |
 
 `GET /media` supports `search`, `kind=photo|video`,
 `sort=newest|oldest|title`, `trash=true`, capture-time ranges, and GPS radius
 search. A returned item's `shared` field is `true` when the current user is a
 recipient rather than its owner.
+
+Google Takeout import accepts `multipart/form-data` with an `archive` ZIP and
+an optional `momentsEnabled` boolean, which defaults to `true`. Submit each
+ZIP from a split Takeout export separately. Imports preserve sidecar capture
+times, deduplicate by owner-scoped SHA-256, enqueue normal media processing,
+and idempotently recreate Google album folders as manual albums. Calendar
+folders such as `Photos from 2025` are not recreated because automatic albums
+already cover that organization. Retried or repeated media is linked to albums
+but retains its existing Moments setting. When explicitly disabled, media is
+excluded only from automatic Moment generation; users can still manually create a
+Moment or add the imported media to an existing Moment.
+
+The command-line utility imports either one ZIP or every ZIP in a directory and
+records completed archives by SHA-256, allowing a later run to continue with the
+first unfinished archive:
+
+```bash
+./scripts/import-google-takeout.sh \
+  --server https://gallery.example.com \
+  /path/to/google-takeout
+```
+
+It prompts for password and TOTP without storing them. The checkpoint defaults
+to `.pal-takeout-import.state` beside a directory input. Resumption is at ZIP
+boundaries; an interrupted ZIP restarts because the import endpoint does not
+support byte-range upload sessions.
 
 ### Albums
 

@@ -1692,6 +1692,48 @@ paths:
                 $ref: "#/components/schemas/ImportResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+  /media/import/google-takeout:
+    post:
+      tags: [Transfer]
+      operationId: importGoogleTakeout
+      summary: Import media and albums from a Google Takeout ZIP
+      description: |
+        Accepts one ZIP per request. Submit split Takeout exports sequentially;
+        owner-scoped SHA-256 deduplication and stable album mappings make retries
+        idempotent. `momentsEnabled` defaults to true. Duplicate media retains
+        its existing Moments setting.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [archive]
+              properties:
+                archive:
+                  type: string
+                  format: binary
+                  description: A Google Takeout ZIP containing a Google Photos directory.
+                momentsEnabled:
+                  type: boolean
+                  default: true
+                  description: Allow newly imported media to participate in automatic Moment generation. Manual Moment creation remains available when false.
+      responses:
+        "201":
+          description: Archive imported and its media queued for normal processing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TakeoutImportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          description: The archive, expanded content, or resulting owner storage exceeds its configured limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     sessionCookie:
@@ -2596,6 +2638,16 @@ components:
         sessionId: { type: string, format: uuid }
         status: { type: string, const: completed }
         importedAlbums: { type: integer, minimum: 0 }
+    TakeoutImportResult:
+      type: object
+      additionalProperties: false
+      required: [imported, duplicates, skipped, albums, momentsEnabled]
+      properties:
+        imported: { type: integer, minimum: 0 }
+        duplicates: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        albums: { type: integer, minimum: 0 }
+        momentsEnabled: { type: boolean }
     ErrorResponse:
       type: object
       additionalProperties: false

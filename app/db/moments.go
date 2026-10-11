@@ -175,8 +175,7 @@ func (store *Postgres) SetMomentCover(ctx context.Context, momentID, ownerID, me
 	return momentChanged(result.RowsAffected(), err)
 }
 
-func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string) ([]moments.Candidate, error) {
-	rows, err := store.pool.Query(ctx, `SELECT media.upload_id, COALESCE(media.thumbnail_path, media.media_path),
+const momentCandidatesQuery = `SELECT media.upload_id, COALESCE(media.thumbnail_path, media.media_path),
 		COALESCE(exif.captured_at, media.created_at),
 		exif.latitude, exif.longitude, COALESCE(embedding.embedding, '{}'::DOUBLE PRECISION[])
 		FROM media_uploads media
@@ -184,7 +183,7 @@ func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string)
 		LEFT JOIN LATERAL (SELECT stored.embedding FROM media_embeddings stored
 			WHERE stored.upload_id = media.upload_id ORDER BY stored.created_at DESC LIMIT 1) embedding ON TRUE
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $1
-		WHERE media.deleted_at IS NULL AND media.mime_type LIKE 'image/%'
+		WHERE media.deleted_at IS NULL AND media.moments_enabled = TRUE AND media.mime_type LIKE 'image/%'
 		AND (media.owner_id = $1 OR share.user_id IS NOT NULL)
 		AND COALESCE(exif.captured_at, media.created_at) >= now() - INTERVAL '7 days'
 		AND COALESCE(exif.captured_at, media.created_at) <= now()
@@ -194,7 +193,10 @@ func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string)
 			WHERE duplicate.upload_id = media.upload_id AND duplicate.is_primary = FALSE)
 		AND NOT EXISTS (SELECT 1 FROM moment_media member JOIN moments moment ON moment.id = member.moment_id
 			WHERE member.upload_id = media.upload_id AND moment.owner_id = $1)
-		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id`, ownerID)
+		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id`
+
+func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string) ([]moments.Candidate, error) {
+	rows, err := store.pool.Query(ctx, momentCandidatesQuery, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +278,8 @@ func (store *Postgres) CreateGeneratedMoment(ctx context.Context, moment moments
 	var availableCount int
 	if err := transaction.QueryRow(ctx, `SELECT COUNT(*) FROM media_uploads media
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $2
-		WHERE media.upload_id = ANY($1) AND media.deleted_at IS NULL AND media.mime_type LIKE 'image/%'
+		WHERE media.upload_id = ANY($1) AND media.deleted_at IS NULL AND media.moments_enabled = TRUE
+		AND media.mime_type LIKE 'image/%'
 		AND (media.owner_id = $2 OR share.user_id IS NOT NULL)
 		AND NOT EXISTS (SELECT 1 FROM moment_media member JOIN moments existing ON existing.id = member.moment_id
 			WHERE member.upload_id = media.upload_id AND existing.owner_id = $2)`, mediaIDs, moment.OwnerID).Scan(&availableCount); err != nil {
@@ -314,7 +317,8 @@ func (store *Postgres) CreateMoment(ctx context.Context, moment moments.Moment, 
 	var accessible int
 	if err := transaction.QueryRow(ctx, `SELECT COUNT(DISTINCT media.upload_id) FROM media_uploads media
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $2
-		WHERE media.upload_id = ANY($1) AND media.deleted_at IS NULL AND media.mime_type LIKE 'image/%'
+		WHERE media.upload_id = ANY($1) AND media.deleted_at IS NULL
+		AND media.mime_type LIKE 'image/%'
 		AND (media.owner_id = $2 OR share.user_id IS NOT NULL)
 		AND NOT EXISTS (SELECT 1 FROM moment_media member JOIN moments existing ON existing.id = member.moment_id
 			WHERE member.upload_id = media.upload_id AND existing.owner_id = $2)`, mediaIDs, moment.OwnerID).Scan(&accessible); err != nil {
