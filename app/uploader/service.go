@@ -1,7 +1,9 @@
 package uploader
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +22,7 @@ type service struct {
 	minDiskFree    int64
 	maxActive      int
 	diskFree       func(string) (int64, error)
-	mediaStore     MediaRepository
+	mediaStore     UploadRepository
 	uploads        map[string]*uploadSession
 	uploadMux      sync.RWMutex
 }
@@ -97,7 +99,7 @@ func withDiskFree(check func(string) (int64, error)) Option {
 	}
 }
 
-func WithMediaRepository(repository MediaRepository) Option {
+func WithMediaRepository(repository UploadRepository) Option {
 	return func(service *service) error {
 		if repository == nil {
 			return fmt.Errorf("media repository is required")
@@ -169,6 +171,11 @@ func (s *service) loadUploads() error {
 		if upload.ID != entry.Name() || upload.Size <= 0 || upload.Size > s.maxUploadSize || upload.Chunks <= 0 {
 			return fmt.Errorf("invalid upload metadata %q", entry.Name())
 		}
+		if s.mediaStore != nil {
+			if err := s.mediaStore.RestoreUploadStorage(context.Background(), upload); err != nil {
+				return fmt.Errorf("restore upload storage %q: %w", entry.Name(), err)
+			}
+		}
 		s.uploads[upload.ID] = &uploadSession{upload: upload}
 	}
 	return nil
@@ -206,6 +213,22 @@ func (s *service) writeMetadata(upload *Upload) error {
 	return nil
 }
 
+func (s *service) removeUpload(ctx context.Context, upload Upload) error {
+	if s.mediaStore != nil {
+		if err := s.mediaStore.ReleaseUploadStorage(ctx, upload.OwnerID, upload.ID); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(s.tmpDir, upload.ID)); err != nil {
+		var restoreErr error
+		if s.mediaStore != nil {
+			restoreErr = s.mediaStore.RestoreUploadStorage(context.WithoutCancel(ctx), upload)
+		}
+		return errors.Join(err, restoreErr)
+	}
+	return nil
+}
+
 func (s *service) CleanupExpiredUploads(now time.Time, maxAge time.Duration) (int, error) {
 	if maxAge <= 0 {
 		return 0, fmt.Errorf("upload retention must be positive")
@@ -231,7 +254,7 @@ func (s *service) CleanupExpiredUploads(now time.Time, maxAge time.Duration) (in
 			session.mutex.Unlock()
 			continue
 		}
-		if err := os.RemoveAll(dir); err != nil {
+		if err := s.removeUpload(context.Background(), session.upload); err != nil {
 			session.mutex.Unlock()
 			return removed, fmt.Errorf("remove expired upload %q: %w", id, err)
 		}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -15,12 +16,144 @@ import (
 	"pal-next-gallery-server/app/auth"
 	"pal-next-gallery-server/app/moments"
 	"pal-next-gallery-server/app/processing"
+	"pal-next-gallery-server/app/uploader"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestPostgresConcurrentImportsRespectStorageQuota(t *testing.T) {
+	store, ownerID, _ := momentTestStore(t, 0)
+	ctx := context.Background()
+	if _, err := store.pool.Exec(ctx, `UPDATE users SET storage_quota_bytes = 10 WHERE id = $1`, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 3)
+	for index := 0; index < 3; index++ {
+		mediaID := uuid.NewString()
+		go func() {
+			<-start
+			results <- store.SaveCompletedMedia(ctx, uploader.CompletedMedia{
+				UploadID: mediaID, OwnerID: ownerID, Filename: "photo.jpg", MimeType: "image/jpeg",
+				Size: 6, SHA256: mediaID, MediaPath: mediaID + ".jpg", CreatedAt: time.Now().UTC(),
+			})
+		}()
+	}
+	close(start)
+	saved := 0
+	for index := 0; index < 3; index++ {
+		if err := <-results; err == nil {
+			saved++
+		} else if !errors.Is(err, uploader.ErrStorageQuota) {
+			t.Errorf("unexpected save error: %v", err)
+		}
+	}
+	if saved != 1 {
+		t.Fatalf("saved %d concurrent imports; only one fits the quota", saved)
+	}
+}
+
+func TestPostgresImportsRespectPendingUploads(t *testing.T) {
+	store, ownerID, _ := momentTestStore(t, 0)
+	ctx := context.Background()
+	upload := uploader.Upload{ID: uuid.NewString(), OwnerID: ownerID, Size: 6}
+	if err := store.ReserveUploadStorage(ctx, upload, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RestoreUploadStorage(ctx, upload); err != nil {
+		t.Fatal(err)
+	}
+	media := uploader.CompletedMedia{
+		UploadID: uuid.NewString(), OwnerID: ownerID, Filename: "photo.jpg", MimeType: "image/jpeg",
+		Size: 5, SHA256: "import", MediaPath: "import.jpg", CreatedAt: time.Now().UTC(), StorageQuota: 10,
+	}
+	if err := store.SaveCompletedMedia(ctx, media); !errors.Is(err, uploader.ErrStorageQuota) {
+		t.Fatalf("import ignored pending upload reservation: %v", err)
+	}
+	media.Size = 4
+	if err := store.SaveCompletedMedia(ctx, media); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReserveUploadStorage(ctx, uploader.Upload{ID: uuid.NewString(), OwnerID: ownerID, Size: 1}, 10); !errors.Is(err, uploader.ErrStorageQuota) {
+		t.Fatalf("upload ignored imported media: %v", err)
+	}
+	media.UploadID, media.SHA256, media.MediaPath, media.Size = upload.ID, "upload", "upload.jpg", upload.Size
+	if err := store.SaveCompletedMedia(ctx, media); err != nil {
+		t.Fatalf("completion counted its own reservation twice: %v", err)
+	}
+	var reservations int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM upload_storage_reservations WHERE owner_id = $1`, ownerID).Scan(&reservations); err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 0 {
+		t.Fatalf("completion retained %d reservations", reservations)
+	}
+	if err := store.SaveCompletedMedia(ctx, media); err != nil {
+		t.Fatalf("idempotent completion counted stored media twice: %v", err)
+	}
+}
+
+func TestPostgresConcurrentImportsAndUploadReservations(t *testing.T) {
+	store, ownerID, _ := momentTestStore(t, 0)
+	ctx := context.Background()
+	start := make(chan struct{})
+	results := make(chan error, 12)
+	for index := 0; index < 12; index++ {
+		mediaID := uuid.NewString()
+		reserve := index%2 == 0
+		go func() {
+			<-start
+			if reserve {
+				results <- store.ReserveUploadStorage(ctx, uploader.Upload{ID: mediaID, OwnerID: ownerID, Size: 6}, 10)
+				return
+			}
+			results <- store.SaveCompletedMedia(ctx, uploader.CompletedMedia{
+				UploadID: mediaID, OwnerID: ownerID, Filename: "photo.jpg", MimeType: "image/jpeg",
+				Size: 6, SHA256: mediaID, MediaPath: mediaID + ".jpg", CreatedAt: time.Now().UTC(), StorageQuota: 10,
+			})
+		}()
+	}
+	close(start)
+	saved := 0
+	for index := 0; index < 12; index++ {
+		if err := <-results; err == nil {
+			saved++
+		} else if !errors.Is(err, uploader.ErrStorageQuota) {
+			t.Errorf("unexpected quota error: %v", err)
+		}
+	}
+	if saved != 1 {
+		t.Fatalf("accepted %d concurrent imports/reservations; only one fits", saved)
+	}
+}
+
+func TestPostgresRestoresAndReleasesUploadStorage(t *testing.T) {
+	store, ownerID, _ := momentTestStore(t, 0)
+	ctx := context.Background()
+	upload := uploader.Upload{ID: uuid.NewString(), OwnerID: ownerID, Size: 12}
+	if _, err := store.pool.Exec(ctx, `UPDATE users SET storage_quota_bytes = 10 WHERE id = $1`, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RestoreUploadStorage(ctx, upload); err != nil {
+		t.Fatalf("could not restore an upload after a quota reduction: %v", err)
+	}
+	if err := store.ReserveUploadStorage(ctx, uploader.Upload{ID: uuid.NewString(), OwnerID: ownerID, Size: 1}, 100); !errors.Is(err, uploader.ErrStorageQuota) {
+		t.Fatalf("restored upload did not reserve storage: %v", err)
+	}
+	if err := store.ReleaseUploadStorage(ctx, ownerID, upload.ID); err != nil {
+		t.Fatal(err)
+	}
+	upload.ID, upload.Size = uuid.NewString(), 10
+	if err := store.ReserveUploadStorage(ctx, upload, 100); err != nil {
+		t.Fatalf("released storage was not available: %v", err)
+	}
+	if err := store.ReserveUploadStorage(ctx, uploader.Upload{ID: uuid.NewString(), OwnerID: ownerID, Size: 1}, 100); !errors.Is(err, uploader.ErrStorageQuota) {
+		t.Fatalf("per-user quota did not override the default: %v", err)
+	}
+}
 
 func TestSchemaUpgradesExistingAlbumsTable(t *testing.T) {
 	for _, statement := range []string{
@@ -144,16 +277,12 @@ func TestDifferenceHashDistance(t *testing.T) {
 	}
 }
 
-func TestSchemaPersistsVersionedImageEmbeddings(t *testing.T) {
-	for _, statement := range []string{
-		"CREATE TABLE IF NOT EXISTS media_embeddings",
-		"embedding DOUBLE PRECISION[] NOT NULL",
-		"PRIMARY KEY (upload_id, model, version)",
-		"array_length(embedding, 1) = dimensions",
-	} {
-		if !strings.Contains(schema, statement) {
-			t.Errorf("embedding schema does not contain %q", statement)
-		}
+func TestMomentsDoNotRequireLegacyImageEmbeddings(t *testing.T) {
+	if strings.Contains(schema, "media_embeddings") {
+		t.Error("new installations should not create the retired image-embedding table")
+	}
+	if strings.Contains(momentCandidatesQuery, "media_embeddings") {
+		t.Error("moment candidates should not depend on retired image embeddings")
 	}
 }
 
@@ -225,6 +354,22 @@ func momentTestStore(t *testing.T, count int) (*Postgres, string, []moments.Cand
 		}
 	}
 	return store, ownerID, candidates
+}
+
+func TestPostgresMomentCandidatesWithoutImageEmbeddings(t *testing.T) {
+	store, ownerID, expected := momentTestStore(t, 3)
+	candidates, err := store.ListMomentCandidates(context.Background(), ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != len(expected) {
+		t.Fatalf("candidate count = %d, want %d", len(candidates), len(expected))
+	}
+	for index, candidate := range candidates {
+		if candidate.ID != expected[index].ID {
+			t.Errorf("unexpected candidate: %+v", candidate)
+		}
+	}
 }
 
 func TestPostgresMomentQueueBudgetAndLeases(t *testing.T) {

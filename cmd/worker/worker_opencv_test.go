@@ -39,9 +39,9 @@ func TestClusterGroupsSimilarImagesAndSelectsRepresentative(t *testing.T) {
 func TestClusterDoesNotChainEventsThroughBridgeImage(t *testing.T) {
 	capturedAt := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
 	groups := cluster([]imageFeatures{
-		{candidate: moments.Candidate{ID: "first", CapturedAt: capturedAt, Embedding: []float64{1, 0}}, hash: 0},
-		{candidate: moments.Candidate{ID: "bridge", CapturedAt: capturedAt, Embedding: []float64{1, 1}}, hash: (uint64(1) << 29) - 1},
-		{candidate: moments.Candidate{ID: "second", CapturedAt: capturedAt, Embedding: []float64{0, 1}}, hash: ^uint64(0)},
+		{candidate: moments.Candidate{ID: "first", CapturedAt: capturedAt}, histogram: [48]float64{0: 0.8, 1: 0.2}, hash: 0},
+		{candidate: moments.Candidate{ID: "bridge", CapturedAt: capturedAt}, histogram: [48]float64{0: 0.5, 1: 0.5}, hash: (uint64(1) << 29) - 1},
+		{candidate: moments.Candidate{ID: "second", CapturedAt: capturedAt}, histogram: [48]float64{0: 0.2, 1: 0.8}, hash: ^uint64(0)},
 	})
 
 	if len(groups) != 2 || len(groups[0]) != 2 || len(groups[1]) != 1 {
@@ -64,21 +64,6 @@ func TestRepresentativeTargetScalesBetweenFiveAndFifteen(t *testing.T) {
 		if got := representativeTarget(test.groupSize); got != test.want {
 			t.Errorf("representativeTarget(%d) = %d, want %d", test.groupSize, got, test.want)
 		}
-	}
-}
-
-func TestCosineSimilarityNormalizesToUnitInterval(t *testing.T) {
-	if similarity, ok := cosineSimilarity([]float64{1, 0}, []float64{1, 0}); !ok || similarity != 1 {
-		t.Fatalf("identical vectors: similarity=%f ok=%t", similarity, ok)
-	}
-	if similarity, ok := cosineSimilarity([]float64{1, 0}, []float64{0, 1}); !ok || similarity != 0 {
-		t.Fatalf("orthogonal vectors: similarity=%f ok=%t", similarity, ok)
-	}
-	if similarity, ok := cosineSimilarity([]float64{1, 0}, []float64{-1, 0}); !ok || similarity != 0 {
-		t.Fatalf("opposite vectors: similarity=%f ok=%t", similarity, ok)
-	}
-	if _, ok := cosineSimilarity([]float64{1}, []float64{1, 0}); ok {
-		t.Fatal("mismatched vectors should not produce a similarity")
 	}
 }
 

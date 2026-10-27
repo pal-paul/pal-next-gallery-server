@@ -69,8 +69,6 @@ type Environment struct {
 	MomentsGeminiAPIKey    string `env:"ENV_MOMENTS_GEMINI_API_KEY"`
 	MomentsGeminiModel     string `env:"ENV_MOMENTS_GEMINI_MODEL,default=gemini-3.5-flash-lite"`
 	MomentsGeminiTextModel string `env:"ENV_MOMENTS_GEMINI_TEXT_MODEL,default=gemini-3.5-flash-lite"`
-	MomentsEmbeddingURL    string `env:"ENV_MOMENTS_EMBEDDING_URL"`
-	MomentsEmbeddingModel  string `env:"ENV_MOMENTS_EMBEDDING_MODEL,default=openai/clip-vit-base-patch32"`
 	NASImportPath          string `env:"NAS_IMPORT_PATH"`
 }
 
@@ -192,21 +190,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create operations service: %w", err)
 	}
-	processingOptions := make([]processing.Option, 0, 1)
-	if endpoint := strings.TrimSpace(envVar.MomentsEmbeddingURL); aiEnabled && endpoint != "" {
-		embedder, err := processing.NewHTTPImageEmbedder(endpoint, envVar.MomentsEmbeddingModel)
-		if err != nil {
-			return fmt.Errorf("configure image embeddings: %w", err)
-		}
-		processingOptions = append(processingOptions, processing.WithImageEmbedder(embedder))
-		slog.Info("image embeddings enabled", "model", envVar.MomentsEmbeddingModel)
-	}
-	processingService := processing.New(database, envVar.MediaDir, processingOptions...)
+	processingService := processing.New(database, envVar.MediaDir)
 	publicShareService := publicshare.New(database, envVar.MediaDir)
 	trashService := trash.New(database, envVar.MediaDir)
 	batchService := batch.New(database)
 	transferService := transfer.New(database)
-	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize)
+	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize, envVar.MinDiskFree)
 	if err != nil {
 		return fmt.Errorf("create Google Takeout import service: %w", err)
 	}

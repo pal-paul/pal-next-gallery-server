@@ -230,6 +230,18 @@ function App({ onLogout }: Props) {
     setMedia(await galleryApi.loadMedia())
   }
 
+  const refreshAfterImport = async () => {
+    if (!connected) return
+    const [loadedMedia, loadedAlbums, detail] = await Promise.all([
+      galleryApi.loadMedia(),
+      galleryApi.loadAlbums(),
+      activeAlbumId !== null ? galleryApi.loadAlbum(activeAlbumId) : Promise.resolve(undefined),
+    ])
+    setAlbums(loadedAlbums.map((album) => detail && album.id === detail.album.id ? detail.album : album))
+    const albumMediaIds = new Set(detail?.media.map((item) => item.id))
+    setMedia([...loadedMedia.filter((item) => !albumMediaIds.has(item.id)), ...detail?.media ?? []])
+  }
+
   const showAllMedia = () => {
     setView('media')
     setActiveAlbumId(null)
@@ -453,7 +465,7 @@ function App({ onLogout }: Props) {
 
   return (
     <div className="app-shell">
-      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMoments={() => void showMoments()} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onCreateMoment={() => { setView('moments'); setActiveMoment(undefined); setCreatingMoment(true) }} onFindMoments={() => void generateMoments()} aiEnabled={aiEnabled} generatingMoments={generatingMoments} canUpload={connected && !demoMode} onUploaded={loadAllMedia} onLogout={onLogout} />
+      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMoments={() => void showMoments()} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onCreateMoment={() => { setView('moments'); setActiveMoment(undefined); setCreatingMoment(true) }} onFindMoments={() => void generateMoments()} aiEnabled={aiEnabled} generatingMoments={generatingMoments} canUpload={connected && !demoMode} onUploaded={loadAllMedia} onImported={refreshAfterImport} onLogout={onLogout} />
       <main>
         {view !== 'moments' && <PageHeading view={view} album={activeAlbum} albumCount={albums.length} mediaCount={view === 'favorites' || view === 'trash' ? visibleMedia.length : media.length} favoriteCount={media.filter((item) => item.favorite && !item.deletedAt).length} onBack={showAlbums} onEdit={() => openEditAlbum()} onAddImages={() => openEditAlbum(true)} />}
         {!['storage', 'moments'].includes(view) && !activeAlbum && <LibraryToolbar view={view} query={query} filter={filter} sort={sort} grouping={grouping} onQueryChange={setQuery} onFilterChange={setFilter} onSortChange={setSort} onGroupingChange={setGrouping} />}

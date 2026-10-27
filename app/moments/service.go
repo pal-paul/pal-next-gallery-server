@@ -67,7 +67,6 @@ type Candidate struct {
 	SimilarityScore     float64   `json:"similarityScore,omitempty"`
 	RepresentativeScore float64   `json:"representativeScore,omitempty"`
 	Representative      bool      `json:"representative,omitempty"`
-	Embedding           []float64 `json:"embedding,omitempty"`
 }
 
 type Repository interface {

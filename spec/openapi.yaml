@@ -72,7 +72,7 @@ info:
     Upload handlers never call Gemini. The separate moment worker describes and
     embeds each eligible photo, reuses cached features on retry, and names a new
     moment only on promotion. Later matches retain its title and description.
-    CLIP pixel embeddings are separate from descriptor-text vectors. User-triggered Moment and Album
+    No local image-embedding service is required. User-triggered Moment and Album
     metadata suggestions randomly sample at most six member photos and reuse
     cached descriptions.
 
@@ -100,8 +100,8 @@ info:
       text requests are separate from this image quota.
     - `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001` with
       768-dimensional descriptor-text vectors and compatible-model cosine retrieval.
-    - `ENV_AI_FEATURE` defaults to `YES`. Setting it to `NO` disables CLIP
-      embeddings, Gemini worker inference, manual AI discovery, and
+    - `ENV_AI_FEATURE` defaults to `YES`. Setting it to `NO` disables
+      Gemini worker inference, manual AI discovery, and
       AI metadata suggestions without disabling uploads, Albums, or manual
       Moment management. Queued work is retained; recreate server and worker
       after changing this setting.
@@ -1298,6 +1298,12 @@ paths:
         record, and removes temporary chunks and active-session metadata. The
         returned lowercase SHA-256 is always computed by the server. Missing
         parts return `409`; size or checksum mismatches return `400`.
+
+        Storage quota is rechecked atomically with persistence, including other
+        unfinished upload reservations and concurrently imported media. The
+        upload's own reservation is consumed without double-counting its size.
+        A quota rejection returns `429` without Retry-After and retains the
+        resumable chunks and reservation until cancellation or expiry.
       parameters:
         - $ref: "#/components/parameters/UploadID"
       responses:
@@ -1317,6 +1323,19 @@ paths:
           $ref: "#/components/responses/UploadNotFound"
         "409":
           $ref: "#/components/responses/UploadConflict"
+        "429":
+          description: Storage quota exceeded. Free storage or increase the quota; do not retry automatically.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, error]
+                properties:
+                  code:
+                    type: string
+                    enum: [upload_storage_quota_exceeded]
+                  error:
+                    type: string
         "500":
           $ref: "#/components/responses/InternalServerError"
   /auth/recovery:
@@ -1744,6 +1763,12 @@ paths:
         owner-scoped SHA-256 deduplication and stable album mappings make retries
         idempotent. `momentsEnabled` defaults to true. Duplicate media retains
         its existing Moments setting.
+        Archives stream into size-bounded files in the configured temporary
+        directory and are removed after success or failure. Archive staging
+        enforces the configured free-disk reserve.
+        Extraction checks the expanded entry size against the configured minimum
+        free-disk reserve and rechecks during writes. A low-space failure removes
+        the partial file; earlier files imported from the archive remain stored.
       requestBody:
         required: true
         content:
@@ -1772,6 +1797,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "413":
           description: The archive, expanded content, or resulting owner storage exceeds its configured limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Insufficient disk space to stage the archive or extract media without consuming the configured free-space reserve.
           content:
             application/json:
               schema:

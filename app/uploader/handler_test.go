@@ -37,6 +37,7 @@ type recordingMediaRepository struct {
 	storedBytes int64
 	saveErr     error
 	quota       *int64
+	pending     map[string]Upload
 }
 
 func (repository *recordingMediaRepository) SaveCompletedMedia(_ context.Context, media CompletedMedia) error {
@@ -44,6 +45,39 @@ func (repository *recordingMediaRepository) SaveCompletedMedia(_ context.Context
 		return repository.saveErr
 	}
 	repository.media = append(repository.media, media)
+	repository.storedBytes += media.Size
+	delete(repository.pending, media.UploadID)
+	return nil
+}
+
+func (repository *recordingMediaRepository) ReserveUploadStorage(ctx context.Context, upload Upload, limit int64) error {
+	if repository.quota != nil {
+		limit = *repository.quota
+	}
+	used := repository.storedBytes
+	for _, pending := range repository.pending {
+		if pending.OwnerID == upload.OwnerID && pending.ID != upload.ID {
+			used += pending.Size
+		}
+	}
+	if quotaExceeded(used, upload.Size, limit) {
+		return ErrStorageQuota
+	}
+	return repository.RestoreUploadStorage(ctx, upload)
+}
+
+func (repository *recordingMediaRepository) RestoreUploadStorage(_ context.Context, upload Upload) error {
+	if repository.pending == nil {
+		repository.pending = make(map[string]Upload)
+	}
+	repository.pending[upload.ID] = upload
+	return nil
+}
+
+func (repository *recordingMediaRepository) ReleaseUploadStorage(_ context.Context, ownerID, uploadID string) error {
+	if repository.pending[uploadID].OwnerID == ownerID {
+		delete(repository.pending, uploadID)
+	}
 	return nil
 }
 
@@ -66,6 +100,78 @@ func (repository *recordingMediaRepository) FindOwnedMediaBySHA256(_ context.Con
 }
 func (repository *recordingMediaRepository) ValidateUploadBatch(context.Context, string, string) error {
 	return nil
+}
+
+type diskWriteFunc func([]byte) (int, error)
+
+func (write diskWriteFunc) Write(data []byte) (int, error) {
+	return write(data)
+}
+
+func TestCopyWithDiskReserveCoordinatesConcurrentWriters(t *testing.T) {
+	var mutex sync.Mutex
+	available := int64(100)
+	destination := diskWriteFunc(func(data []byte) (int, error) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		available -= int64(len(data))
+		return len(data), nil
+	})
+	check := func(string) (int64, error) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		return available, nil
+	}
+	start := make(chan struct{})
+	results := make(chan error, 32)
+	for index := 0; index < 32; index++ {
+		go func() {
+			<-start
+			_, err := CopyWithDiskReserve(context.Background(), destination, strings.NewReader(strings.Repeat("x", 30)), "media", 60, check)
+			results <- err
+		}()
+	}
+	close(start)
+	succeeded := 0
+	for index := 0; index < 32; index++ {
+		if err := <-results; err == nil {
+			succeeded++
+		} else if !errors.Is(err, ErrInsufficientDiskSpace) {
+			t.Errorf("unexpected write error: %v", err)
+		}
+	}
+	if succeeded != 1 || available != 70 {
+		t.Fatalf("concurrent writers exceeded capacity: succeeded=%d, available=%d", succeeded, available)
+	}
+}
+
+func TestCopyWithDiskReserveBoundsWritesAndRechecksCapacity(t *testing.T) {
+	available := int64(200000)
+	writes := 0
+	destination := diskWriteFunc(func(data []byte) (int, error) {
+		if len(data) > 32*1024 {
+			t.Fatalf("unbounded write: %d bytes", len(data))
+		}
+		writes++
+		available = 5
+		return len(data), nil
+	})
+	written, err := CopyWithDiskReserve(context.Background(), destination, strings.NewReader(strings.Repeat("x", 100000)),
+		"media", 5, func(string) (int64, error) { return available, nil })
+	if !errors.Is(err, ErrInsufficientDiskSpace) || written != 32*1024 || writes != 1 {
+		t.Fatalf("did not stop at reserve: written=%d, writes=%d, error=%v", written, writes, err)
+	}
+}
+
+func TestCopyWithDiskReserveHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var destination bytes.Buffer
+	written, err := CopyWithDiskReserve(ctx, &destination, strings.NewReader("photo"), "media", 0,
+		func(string) (int64, error) { return 100, nil })
+	if !errors.Is(err, context.Canceled) || written != 0 || destination.Len() != 0 {
+		t.Fatalf("canceled extraction wrote data: %d, %v", written, err)
+	}
 }
 
 func TestCheckDuplicateAndCreateConflict(t *testing.T) {
@@ -98,7 +204,8 @@ func TestUploadSurvivesRestartAndCompletes(t *testing.T) {
 	content := []byte("durable media")
 	digest := sha256.Sum256(content)
 
-	firstService := newTestService(t, tmpDir, mediaDir, int64(len(content)))
+	repository := &recordingMediaRepository{}
+	firstService := newTestService(t, tmpDir, mediaDir, int64(len(content)), WithMediaRepository(repository))
 	firstRouter := newTestRouter(t, firstService)
 	created := createUpload(t, firstRouter, fmt.Sprintf(
 		`{"filename":"../video.mp4","size":%d,"sha256":"%s"}`,
@@ -109,7 +216,11 @@ func TestUploadSurvivesRestartAndCompletes(t *testing.T) {
 		t.Fatalf("metadata was not persisted: %v", err)
 	}
 
-	recoveredService := newTestService(t, tmpDir, mediaDir, int64(len(content)))
+	repository.pending = nil
+	recoveredService := newTestService(t, tmpDir, mediaDir, int64(len(content)), WithMediaRepository(repository))
+	if repository.pending[created.ID].Size != int64(len(content)) {
+		t.Fatal("recovered upload did not restore its storage reservation")
+	}
 	recoveredRouter := newTestRouter(t, recoveredService)
 	response := performRequest(recoveredRouter, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewReader(content))
 	if response.Code != http.StatusOK {
@@ -136,6 +247,9 @@ func TestUploadSurvivesRestartAndCompletes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, created.ID)); !os.IsNotExist(err) {
 		t.Fatalf("temporary upload directory still exists: %v", err)
+	}
+	if len(repository.pending) != 0 {
+		t.Fatal("completed upload retained its storage reservation")
 	}
 }
 
@@ -216,6 +330,10 @@ func TestCreateUploadEnforcesTotalStorageQuota(t *testing.T) {
 	if response.Header().Get("Retry-After") != "" {
 		t.Fatalf("storage quota must not request automatic retries: %v", response.Header())
 	}
+	entries, err := os.ReadDir(filepath.Join(root, "tmp"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("quota rejection retained upload metadata: %v, %v", entries, err)
+	}
 }
 
 func TestUploadPartRejectsLowDiskSpace(t *testing.T) {
@@ -228,6 +346,54 @@ func TestUploadPartRejectsLowDiskSpace(t *testing.T) {
 	response := performRequest(router, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewBufferString("data"))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got %d, want %d: %s", response.Code, http.StatusServiceUnavailable, response.Body.String())
+	}
+}
+
+func TestUploadStopsWhenDiskSpaceDropsDuringWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("complete=%t", complete), func(t *testing.T) {
+			root := t.TempDir()
+			service := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 4, WithMinDiskFree(10)).(*service)
+			router := newTestRouter(t, service)
+			created := createUpload(t, router, `{"filename":"video.mp4","size":4}`)
+			if complete {
+				response := performRequest(router, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewBufferString("data"))
+				if response.Code != http.StatusOK {
+					t.Fatalf("upload part: %d: %s", response.Code, response.Body.String())
+				}
+			}
+			checks := 0
+			service.diskFree = func(string) (int64, error) {
+				checks++
+				if checks == 1 {
+					return 100, nil
+				}
+				return 10, nil
+			}
+			var response *httptest.ResponseRecorder
+			if complete {
+				response = performRequest(router, http.MethodPost, "/media/upload/"+created.ID+"/complete", nil)
+			} else {
+				response = performRequest(router, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewBufferString("data"))
+			}
+			if response.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503: %s", response.Code, response.Body.String())
+			}
+			if complete {
+				if _, err := os.Stat(filepath.Join(service.tmpDir, created.ID, "00000000.part")); err != nil {
+					t.Fatalf("resumable chunk was removed: %v", err)
+				}
+			}
+			if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+				if err == nil && entry.Type().IsRegular() && strings.HasSuffix(path, ".tmp") {
+					t.Errorf("incomplete write remains: %s", path)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -356,6 +522,9 @@ func TestCompleteDuplicateReleasesPendingUploadQuota(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmpDir, created.ID)); !os.IsNotExist(err) {
 		t.Fatalf("duplicate upload directory still exists: %v", err)
 	}
+	if len(repository.pending) != 0 {
+		t.Fatal("duplicate retained its storage reservation")
+	}
 	response = performRequest(router, http.MethodGet, "/media/upload/"+created.ID, nil)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("duplicate upload status returned %d, want %d", response.Code, http.StatusNotFound)
@@ -383,7 +552,8 @@ func TestUploadSessionIsPrivateToOwner(t *testing.T) {
 func TestCleanupExpiredUploadsRemovesSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	root := t.TempDir()
-	service := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 4)
+	repository := &recordingMediaRepository{}
+	service := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 4, WithMediaRepository(repository))
 	router := newTestRouter(t, service)
 	created := createUpload(t, router, `{"filename":"old.mp4","size":4}`)
 	removed, err := service.CleanupExpiredUploads(time.Now().Add(2*time.Hour), time.Hour)
@@ -393,9 +563,53 @@ func TestCleanupExpiredUploadsRemovesSession(t *testing.T) {
 	if removed != 1 {
 		t.Fatalf("removed %d uploads, want 1", removed)
 	}
+	if len(repository.pending) != 0 {
+		t.Fatal("expired upload retained its storage reservation")
+	}
 	response := performRequest(router, http.MethodGet, "/media/upload/"+created.ID, nil)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("got %d, want %d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestDeleteUploadReleasesStorageReservation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	repository := &recordingMediaRepository{}
+	service := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 4,
+		WithMediaRepository(repository), WithMaxUserStorageSize(4))
+	router := newTestRouter(t, service)
+	created := createUpload(t, router, `{"filename":"cancelled.mp4","size":4}`)
+	response := performRequest(router, http.MethodDelete, "/media/upload/"+created.ID, nil)
+	if response.Code != http.StatusOK || len(repository.pending) != 0 {
+		t.Fatalf("cancellation did not release storage: %d, %v", response.Code, repository.pending)
+	}
+	createUpload(t, router, `{"filename":"next.mp4","size":4}`)
+}
+
+func TestCompleteUploadReportsStorageQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	repository := &recordingMediaRepository{saveErr: ErrStorageQuota}
+	service := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 4,
+		WithMediaRepository(repository), WithMinDiskFree(0))
+	router := newTestRouter(t, service)
+	created := createUpload(t, router, `{"filename":"video.mp4","size":4}`)
+	if response := performRequest(router, http.MethodPut, "/media/upload/"+created.ID+"/parts/0", bytes.NewBufferString("data")); response.Code != http.StatusOK {
+		t.Fatalf("upload part returned %d: %s", response.Code, response.Body.String())
+	}
+	response := performRequest(router, http.MethodPost, "/media/upload/"+created.ID+"/complete", nil)
+	if response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"code":"upload_storage_quota_exceeded"`) {
+		t.Fatalf("unexpected storage quota response: %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Retry-After") != "" {
+		t.Fatal("storage quota must not request automatic retries")
+	}
+	if repository.pending[created.ID].Size != 4 {
+		t.Fatal("failed completion did not retain its reservation")
+	}
+	if _, err := os.Stat(filepath.Join(root, "tmp", created.ID, "00000000.part")); err != nil {
+		t.Fatalf("failed completion did not retain resumable chunks: %v", err)
 	}
 }
 

@@ -167,10 +167,11 @@ prevent a stored cookie from being sent.
 - Upload handlers do not call Gemini. The separate moment worker caches each
   eligible image's description and Gemini descriptor-text embedding, then uses
   cosine/time/GPS event matching. Five distinct matching photos create a named
-  draft; later additions keep the name. CLIP pixel embeddings are separate.
+  draft; later additions keep the name. No local image-embedding service is
+  required.
 - `ENV_MOMENTS_DAILY_IMAGE_LIMIT=100` limits image-description attempts per UTC
   day; embedding and naming text calls are separate. Cached retries reuse features.
-- `ENV_AI_FEATURE=NO` disables CLIP embeddings, Gemini worker inference,
+- `ENV_AI_FEATURE=NO` disables Gemini worker inference,
   manual AI discovery, and metadata suggestions. Recreate server and worker to
   apply the setting. Uploads,
   manual Moments, Albums, and all non-AI editing remain available.

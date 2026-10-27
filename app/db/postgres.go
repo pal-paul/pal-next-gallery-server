@@ -104,6 +104,12 @@ UPDATE media_uploads SET owner_id = (
 ALTER TABLE media_uploads ALTER COLUMN owner_id SET NOT NULL;
 CREATE INDEX IF NOT EXISTS media_uploads_owner_id_idx ON media_uploads(owner_id);
 CREATE INDEX IF NOT EXISTS media_uploads_deleted_at_idx ON media_uploads(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE TABLE IF NOT EXISTS upload_storage_reservations (
+	upload_id TEXT PRIMARY KEY,
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	size BIGINT NOT NULL CHECK (size > 0)
+);
+CREATE INDEX IF NOT EXISTS upload_storage_reservations_owner_id_idx ON upload_storage_reservations(owner_id);
 CREATE TABLE IF NOT EXISTS media_processing_jobs (
 	id TEXT PRIMARY KEY,
 	upload_id TEXT NOT NULL UNIQUE REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
@@ -148,17 +154,6 @@ CREATE TABLE IF NOT EXISTS media_duplicate_group_members (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS media_duplicate_member_near_idx ON media_duplicate_group_members(upload_id);
 CREATE UNIQUE INDEX IF NOT EXISTS media_duplicate_primary_idx ON media_duplicate_group_members(group_id) WHERE is_primary;
-CREATE TABLE IF NOT EXISTS media_embeddings (
-	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
-	model TEXT NOT NULL,
-	version TEXT NOT NULL DEFAULT '',
-	dimensions INTEGER NOT NULL CHECK (dimensions > 0),
-	embedding DOUBLE PRECISION[] NOT NULL,
-	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-	PRIMARY KEY (upload_id, model, version),
-	CHECK (array_length(embedding, 1) = dimensions)
-);
-CREATE INDEX IF NOT EXISTS media_embeddings_upload_idx ON media_embeddings(upload_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS media_image_descriptions (
 	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
 	model TEXT NOT NULL,

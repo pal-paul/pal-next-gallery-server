@@ -37,12 +37,9 @@ Start PostgreSQL and the application:
 docker compose --env-file .env -f build/compose.yaml up --build
 ```
 
-This starts the core gallery without downloading the CLIP model. To enable AI,
-set `ENV_AI_FEATURE=YES` and start the `ai` profile:
-
-```bash
-docker compose --env-file .env -f build/compose.yaml --profile ai up --build
-```
+To enable AI, set `ENV_AI_FEATURE=YES` and configure the Gemini API key before
+starting the same stack. No additional Compose profile, local embedding
+service, or model download is required.
 
 The separate `moments-worker` service processes a durable PostgreSQL queue after
 thumbnail/EXIF processing. Upload requests never wait for Gemini. Set
@@ -66,8 +63,8 @@ jobs are removed, but generated descriptions and text embeddings remain cached. 
 matching photos create a moment; later matches retain its title and description.
 The weekly moment scheduler has been removed. The worker embeds generated descriptor
 text using `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL=gemini-embedding-001` (768 dimensions),
-then uses cosine retrieval/scoring with capture-time and GPS evidence. CLIP pixel
-embeddings are not reused for event semantics; legacy vectors fall back to tokens.
+then uses cosine retrieval/scoring with capture-time and GPS evidence.
+Incompatible or missing descriptor vectors fall back to tokens.
 
 For native development, export the database, media, and Gemini environment
 variables and run `go run ./cmd/moments-worker` separately from the server.

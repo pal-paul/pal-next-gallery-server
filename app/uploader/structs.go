@@ -8,6 +8,7 @@ import (
 )
 
 var ErrDuplicateMedia = errors.New("media with this checksum already exists")
+var ErrStorageQuota = errors.New("storage quota exceeded")
 
 type CreateUploadRequest struct {
 	Filename   string     `json:"filename" binding:"required"`
@@ -46,6 +47,7 @@ type CompletedMedia struct {
 	CreatedAt      time.Time
 	CapturedAt     *time.Time
 	MomentsEnabled *bool
+	StorageQuota   int64
 }
 
 type MediaRepository interface {
@@ -54,6 +56,13 @@ type MediaRepository interface {
 	OwnerStorageQuota(context.Context, string) (int64, bool, error)
 	FindOwnedMediaBySHA256(context.Context, string, string) (CompletedMedia, bool, error)
 	ValidateUploadBatch(context.Context, string, string) error
+}
+
+type UploadRepository interface {
+	MediaRepository
+	ReserveUploadStorage(context.Context, Upload, int64) error
+	RestoreUploadStorage(context.Context, Upload) error
+	ReleaseUploadStorage(context.Context, string, string) error
 }
 
 type uploadSession struct {

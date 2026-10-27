@@ -53,7 +53,7 @@ with these integration details:
     `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001` with
     `SEMANTIC_SIMILARITY` and 768 dimensions; task and dimension are part of the
     cached model identity. Matching uses cosine for compatible vectors and token
-    Jaccard for legacy/missing/incompatible vectors. CLIP pixel vectors are never
+    Jaccard for legacy/missing/incompatible vectors. Image-pixel vectors are never
     used for descriptor similarity. No `pgvector` extension is required; PostgreSQL
     computes exact cosine over stored arrays. Ollama support is not implemented.
 - Embedding failures retain the job and cached description; retries do not repeat

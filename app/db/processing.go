@@ -79,15 +79,6 @@ func (store *Postgres) CompleteProcessingJob(ctx context.Context, job processing
 	if err := store.groupNearDuplicate(ctx, transaction, job, metadata.PerceptualHash); err != nil {
 		return err
 	}
-	if len(metadata.Embedding.Vector) > 0 {
-		if _, err := transaction.Exec(ctx, `INSERT INTO media_embeddings
-			(upload_id, model, version, dimensions, embedding) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (upload_id, model, version) DO UPDATE SET dimensions = EXCLUDED.dimensions,
-			embedding = EXCLUDED.embedding, created_at = now()`, job.UploadID, metadata.Embedding.Model,
-			metadata.Embedding.Version, len(metadata.Embedding.Vector), metadata.Embedding.Vector); err != nil {
-			return err
-		}
-	}
 	if _, err := transaction.Exec(ctx, `UPDATE media_processing_jobs SET status = 'completed', last_error = NULL,
 		updated_at = now() WHERE id = $1`, job.ID); err != nil {
 		return err

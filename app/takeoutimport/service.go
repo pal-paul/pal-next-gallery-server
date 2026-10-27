@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -32,8 +33,9 @@ const (
 )
 
 var (
-	ErrInvalidArchive = errors.New("invalid Google Takeout archive")
-	ErrStorageQuota   = errors.New("storage quota exceeded")
+	ErrInvalidArchive        = errors.New("invalid Google Takeout archive")
+	ErrStorageQuota          = uploader.ErrStorageQuota
+	ErrInsufficientDiskSpace = uploader.ErrInsufficientDiskSpace
 )
 
 type Repository interface {
@@ -47,6 +49,8 @@ type Service struct {
 	mediaDir       string
 	maxArchiveSize int64
 	maxStorageSize int64
+	minDiskFree    int64
+	diskFree       func(string) (int64, error)
 }
 
 type Result struct {
@@ -64,7 +68,7 @@ type sidecar struct {
 	} `json:"photoTakenTime"`
 }
 
-func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStorageSize int64) (*Service, error) {
+func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStorageSize, minDiskFree int64) (*Service, error) {
 	if repository == nil {
 		return nil, errors.New("takeout repository is required")
 	}
@@ -73,6 +77,9 @@ func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStor
 	}
 	if maxArchiveSize <= 0 || maxStorageSize <= 0 {
 		return nil, errors.New("takeout size limits must be positive")
+	}
+	if minDiskFree < 0 {
+		return nil, errors.New("minimum disk free size cannot be negative")
 	}
 	if err := os.MkdirAll(tmpDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create Takeout temporary directory: %w", err)
@@ -83,6 +90,7 @@ func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStor
 	return &Service{
 		repository: repository, tmpDir: filepath.Clean(tmpDir), mediaDir: filepath.Clean(mediaDir),
 		maxArchiveSize: maxArchiveSize, maxStorageSize: maxStorageSize,
+		minDiskFree: minDiskFree, diskFree: uploader.AvailableDiskBytes,
 	}, nil
 }
 
@@ -97,34 +105,23 @@ func (service *Service) Import(ctx *gin.Context) {
 		return
 	}
 	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, service.maxArchiveSize+(1<<20))
-	if err := ctx.Request.ParseMultipartForm(32 << 20); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid or oversized multipart request"})
-		return
-	}
-	if ctx.Request.MultipartForm != nil {
-		defer func() { _ = ctx.Request.MultipartForm.RemoveAll() }()
-	}
-	momentsEnabled := true
-	if raw := strings.TrimSpace(ctx.Request.FormValue("momentsEnabled")); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": "momentsEnabled must be true or false"})
-			return
-		}
-		momentsEnabled = parsed
-	}
-	archiveHeader, err := ctx.FormFile("archive")
-	if err != nil || archiveHeader.Size <= 0 || archiveHeader.Size > service.maxArchiveSize {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "a non-empty Takeout ZIP archive is required"})
-		return
-	}
-	archiveFile, err := archiveHeader.Open()
+	archiveFile, archiveSize, momentsEnabled, err := service.readImportRequest(ctx)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "open Takeout archive failed"})
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, ErrInvalidArchive):
+			status = http.StatusBadRequest
+		case errors.Is(err, ErrInsufficientDiskSpace):
+			status = http.StatusServiceUnavailable
+		}
+		ctx.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
-	defer archiveFile.Close()
-	archive, err := zip.NewReader(archiveFile, archiveHeader.Size)
+	defer func() {
+		_ = archiveFile.Close()
+		_ = os.Remove(archiveFile.Name())
+	}()
+	archive, err := zip.NewReader(archiveFile, archiveSize)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": ErrInvalidArchive.Error()})
 		return
@@ -132,15 +129,83 @@ func (service *Service) Import(ctx *gin.Context) {
 	result, err := service.importArchive(ctx.Request.Context(), archive, user, momentsEnabled)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, ErrInvalidArchive) {
+		switch {
+		case errors.Is(err, ErrInvalidArchive):
 			status = http.StatusBadRequest
-		} else if errors.Is(err, ErrStorageQuota) {
+		case errors.Is(err, ErrStorageQuota):
 			status = http.StatusRequestEntityTooLarge
+		case errors.Is(err, ErrInsufficientDiskSpace):
+			status = http.StatusServiceUnavailable
 		}
 		ctx.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	ctx.JSON(http.StatusCreated, result)
+}
+
+func (service *Service) readImportRequest(ctx *gin.Context) (*os.File, int64, bool, error) {
+	reader, err := ctx.Request.MultipartReader()
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("%w: invalid multipart request", ErrInvalidArchive)
+	}
+	var archive *os.File
+	var size int64
+	momentsEnabled := true
+	complete := false
+	defer func() {
+		if archive != nil && !complete {
+			_ = archive.Close()
+			_ = os.Remove(archive.Name())
+		}
+	}()
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, 0, false, fmt.Errorf("%w: invalid or oversized multipart request", ErrInvalidArchive)
+		}
+		switch part.FormName() {
+		case "archive":
+			if archive != nil || part.FileName() == "" {
+				return nil, 0, false, fmt.Errorf("%w: exactly one archive file is required", ErrInvalidArchive)
+			}
+			archive, err = os.CreateTemp(service.tmpDir, ".takeout-archive-*.zip")
+			if err != nil {
+				return nil, 0, false, fmt.Errorf("create temporary Takeout archive: %w", err)
+			}
+			size, err = uploader.CopyWithDiskReserve(ctx.Request.Context(), archive, io.LimitReader(part, service.maxArchiveSize),
+				service.tmpDir, service.minDiskFree, service.diskFree)
+			if err != nil {
+				var limitError *http.MaxBytesError
+				if errors.As(err, &limitError) || errors.Is(err, io.ErrUnexpectedEOF) {
+					return nil, 0, false, fmt.Errorf("%w: invalid or oversized archive", ErrInvalidArchive)
+				}
+				return nil, 0, false, fmt.Errorf("write temporary Takeout archive: %w", err)
+			}
+			var extra [1]byte
+			if count, err := io.ReadFull(part, extra[:]); size == 0 || count != 0 || !errors.Is(err, io.EOF) {
+				return nil, 0, false, fmt.Errorf("%w: a non-empty archive within the size limit is required", ErrInvalidArchive)
+			}
+		case "momentsEnabled":
+			value, err := io.ReadAll(io.LimitReader(part, 65))
+			if err != nil || len(value) > 64 {
+				return nil, 0, false, fmt.Errorf("%w: invalid momentsEnabled field", ErrInvalidArchive)
+			}
+			if raw := strings.TrimSpace(string(value)); raw != "" {
+				momentsEnabled, err = strconv.ParseBool(raw)
+				if err != nil {
+					return nil, 0, false, fmt.Errorf("%w: momentsEnabled must be true or false", ErrInvalidArchive)
+				}
+			}
+		}
+	}
+	if archive == nil {
+		return nil, 0, false, fmt.Errorf("%w: a Takeout ZIP archive is required", ErrInvalidArchive)
+	}
+	complete = true
+	return archive, size, momentsEnabled, nil
 }
 
 func (service *Service) importArchive(ctx context.Context, archive *zip.Reader, user auth.User, momentsEnabled bool) (Result, error) {
@@ -180,16 +245,6 @@ func (service *Service) importArchive(ctx context.Context, archive *zip.Reader, 
 		}
 	}
 
-	storedBytes, err := service.repository.OwnerStorageBytes(ctx, user.ID)
-	if err != nil {
-		return result, fmt.Errorf("read storage usage: %w", err)
-	}
-	storageQuota := service.maxStorageSize
-	if quota, configured, err := service.repository.OwnerStorageQuota(ctx, user.ID); err != nil {
-		return result, fmt.Errorf("read storage quota: %w", err)
-	} else if configured {
-		storageQuota = quota
-	}
 	albums := make(map[string]map[string]struct{})
 	albumTitles := make(map[string]string)
 	for _, entry := range archive.File {
@@ -206,7 +261,7 @@ func (service *Service) importArchive(ctx context.Context, archive *zip.Reader, 
 		}
 		metadata := sidecars[strings.ToLower(cleanName)]
 		capturedAt := sidecarCaptureTime(metadata)
-		media, duplicate, err := service.importMedia(ctx, entry, user, capturedAt, momentsEnabled, storedBytes, storageQuota)
+		media, duplicate, err := service.importMedia(ctx, entry, user, capturedAt, momentsEnabled)
 		if err != nil {
 			return result, fmt.Errorf("import %q: %w", cleanName, err)
 		}
@@ -214,7 +269,6 @@ func (service *Service) importArchive(ctx context.Context, archive *zip.Reader, 
 			result.Duplicates++
 		} else {
 			result.Imported++
-			storedBytes += media.Size
 		}
 		if sourceKey, title, ok := takeoutAlbum(relativeName); ok {
 			if albums[sourceKey] == nil {
@@ -238,7 +292,10 @@ func (service *Service) importArchive(ctx context.Context, archive *zip.Reader, 
 }
 
 func (service *Service) importMedia(ctx context.Context, entry *zip.File, user auth.User, capturedAt *time.Time,
-	momentsEnabled bool, storedBytes, storageQuota int64) (uploader.CompletedMedia, bool, error) {
+	momentsEnabled bool) (uploader.CompletedMedia, bool, error) {
+	if err := service.checkDiskCapacity(entry.UncompressedSize64); err != nil {
+		return uploader.CompletedMedia{}, false, err
+	}
 	createdAt := entry.Modified.UTC()
 	if capturedAt != nil {
 		createdAt = *capturedAt
@@ -277,7 +334,8 @@ func (service *Service) importMedia(ctx context.Context, entry *zip.File, user a
 	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
 		return uploader.CompletedMedia{}, false, readErr
 	}
-	written, err := io.Copy(io.MultiWriter(temporary, hash), io.MultiReader(bytes.NewReader(sniff[:sniffed]), source))
+	written, err := uploader.CopyWithDiskReserve(ctx, io.MultiWriter(temporary, hash),
+		io.MultiReader(bytes.NewReader(sniff[:sniffed]), source), service.mediaDir, service.minDiskFree, service.diskFree)
 	if err != nil {
 		return uploader.CompletedMedia{}, false, err
 	}
@@ -296,9 +354,6 @@ func (service *Service) importMedia(ctx context.Context, entry *zip.File, user a
 	} else if duplicate {
 		return existing, true, nil
 	}
-	if written > storageQuota-storedBytes {
-		return uploader.CompletedMedia{}, false, ErrStorageQuota
-	}
 	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(filename)))
 	if mimeType == "" {
 		mimeType = http.DetectContentType(sniff[:sniffed])
@@ -313,7 +368,7 @@ func (service *Service) importMedia(ctx context.Context, entry *zip.File, user a
 	media := uploader.CompletedMedia{
 		UploadID: uploadID, OwnerID: user.ID, Filename: filename, MimeType: mimeType, Size: written,
 		SHA256: checksum, MediaPath: filepath.ToSlash(relativeDestination), CreatedAt: createdAt,
-		CapturedAt: capturedAt, MomentsEnabled: &momentsSetting,
+		CapturedAt: capturedAt, MomentsEnabled: &momentsSetting, StorageQuota: service.maxStorageSize,
 	}
 	if err := service.repository.SaveCompletedMedia(ctx, media); err != nil {
 		if errors.Is(err, uploader.ErrDuplicateMedia) {
@@ -329,6 +384,20 @@ func (service *Service) importMedia(ctx context.Context, entry *zip.File, user a
 	}
 	committed = true
 	return media, false, nil
+}
+
+func (service *Service) checkDiskCapacity(required uint64) error {
+	if required > math.MaxInt64 {
+		return ErrInsufficientDiskSpace
+	}
+	available, err := service.diskFree(service.mediaDir)
+	if err != nil {
+		return fmt.Errorf("check free disk space: %w", err)
+	}
+	if available < service.minDiskFree || int64(required) > available-service.minDiskFree {
+		return ErrInsufficientDiskSpace
+	}
+	return nil
 }
 
 func cleanArchivePath(name string) (string, error) {

@@ -40,7 +40,6 @@ type Metadata struct {
 	CameraModel    string
 	Orientation    string
 	PerceptualHash string
-	Embedding      Embedding
 }
 
 type Repository interface {
@@ -56,21 +55,11 @@ type Service struct {
 	repository Repository
 	mediaDir   string
 	process    func(context.Context, Job) (Metadata, error)
-	embedder   ImageEmbedder
 }
 
-type Option func(*Service)
-
-func WithImageEmbedder(embedder ImageEmbedder) Option {
-	return func(service *Service) { service.embedder = embedder }
-}
-
-func New(repository Repository, mediaDir string, options ...Option) *Service {
+func New(repository Repository, mediaDir string) *Service {
 	service := &Service{repository: repository, mediaDir: filepath.Clean(mediaDir)}
 	service.process = service.processMedia
-	for _, option := range options {
-		option(service)
-	}
 	return service
 }
 
@@ -102,16 +91,6 @@ func (service *Service) ProcessOnce(ctx context.Context) (bool, error) {
 		}
 		return true, err
 	}
-	if service.embedder != nil {
-		thumbnail, pathErr := service.safePath(metadata.ThumbnailPath)
-		if pathErr != nil {
-			return true, service.failJob(job, pathErr)
-		}
-		metadata.Embedding, err = service.embedder.Embed(ctx, thumbnail)
-		if err != nil {
-			return true, service.failJob(job, fmt.Errorf("embed image: %w", err))
-		}
-	}
 	if err := service.repository.CompleteProcessingJob(ctx, job, metadata); err != nil {
 		if failErr := service.recordFailure(job, fmt.Errorf("complete processing job: %w", err)); failErr != nil {
 			return true, fmt.Errorf("complete processing job: %v; record failure: %w", err, failErr)
@@ -119,13 +98,6 @@ func (service *Service) ProcessOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return true, nil
-}
-
-func (service *Service) failJob(job Job, err error) error {
-	if failErr := service.recordFailure(job, err); failErr != nil {
-		return fmt.Errorf("%v; record failure: %w", err, failErr)
-	}
-	return err
 }
 
 func (service *Service) recordFailure(job Job, processingErr error) error {

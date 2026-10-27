@@ -226,6 +226,27 @@ quota, not automatic retries. Cancel unused sessions with
 `DELETE /media/upload/{id}`; cleanup must still run after canceling the upload
 task so abandoned sessions do not keep consuming the active-upload allowance.
 
+Stored media and unfinished uploads share atomic, per-owner quota accounting
+with Google Takeout imports. Upload reservations survive restarts and are
+released on completion, duplicate rejection, cancellation, or expiry. Completion
+rechecks the current quota and can also return `429` with
+`upload_storage_quota_exceeded`, for example after an administrator lowers the
+quota. Its chunks remain resumable until the session is canceled or expires.
+Takeout imports return `413` when atomic persistence rejects the quota; rejected
+media files are removed.
+
+Takeout archives stream into size-bounded temporary files in the configured
+temporary directory, rather than multipart spill files in the OS temporary
+directory. Staged archives are removed after success or failure. Archive staging
+uses the same free-space guard as media extraction.
+
+Takeout extraction also checks each entry's expanded size against
+`ENV_MIN_DISK_FREE_BYTES` before creating its media file. Extraction, upload
+chunks, and upload assembly share bounded, free-space-checked writes within the
+server process. Low space returns `503` and removes the incomplete output;
+earlier imported files remain stored, and upload chunks remain resumable.
+Other processes writing to the same filesystem are not coordinated by this guard.
+
 ```mermaid
 sequenceDiagram
   actor Client

@@ -22,10 +22,11 @@ type Props = {
   generatingMoments: boolean
   canUpload: boolean
   onUploaded: () => Promise<void>
+  onImported: () => Promise<void>
   onLogout: () => void
 }
 
-export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShowMoments, onShowMedia, onShowFavorites, onShowTrash, onShowMap, onShowStorage, onCreateAlbum, onCreateMoment, onFindMoments, aiEnabled, generatingMoments, canUpload, onUploaded, onLogout }: Props) {
+export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShowMoments, onShowMedia, onShowFavorites, onShowTrash, onShowMap, onShowStorage, onCreateAlbum, onCreateMoment, onFindMoments, aiEnabled, generatingMoments, canUpload, onUploaded, onImported, onLogout }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [takeoutOpen, setTakeoutOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -78,7 +79,7 @@ export function AppHeader({ view, showingAlbum, albumTitle, onShowAlbums, onShow
           </div>
         </div>
       </header>
-      {takeoutOpen && <TakeoutImportDialog onClose={() => setTakeoutOpen(false)} onImported={onUploaded} />}
+      {takeoutOpen && <TakeoutImportDialog onClose={() => setTakeoutOpen(false)} onImported={onImported} />}
       <nav className="tabbar" aria-label="Gallery sections">
         <button className={view === 'albums' ? 'active' : ''} onClick={onShowAlbums}><Images /><span>Albums</span></button>
         <button className={view === 'moments' ? 'active' : ''} onClick={onShowMoments}><Sparkles /><span>Moments</span></button>

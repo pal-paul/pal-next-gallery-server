@@ -177,11 +177,9 @@ func (store *Postgres) SetMomentCover(ctx context.Context, momentID, ownerID, me
 
 const momentCandidatesQuery = `SELECT media.upload_id, COALESCE(media.thumbnail_path, media.media_path),
 		COALESCE(exif.captured_at, media.created_at),
-		exif.latitude, exif.longitude, COALESCE(embedding.embedding, '{}'::DOUBLE PRECISION[])
+		exif.latitude, exif.longitude
 		FROM media_uploads media
 		LEFT JOIN media_exif exif ON exif.upload_id = media.upload_id
-		LEFT JOIN LATERAL (SELECT stored.embedding FROM media_embeddings stored
-			WHERE stored.upload_id = media.upload_id ORDER BY stored.created_at DESC LIMIT 1) embedding ON TRUE
 		LEFT JOIN user_media_shares share ON share.owner_id = media.owner_id AND share.user_id = $1
 		WHERE media.deleted_at IS NULL AND media.moments_enabled = TRUE AND media.mime_type LIKE 'image/%'
 		AND (media.owner_id = $1 OR share.user_id IS NOT NULL)
@@ -205,7 +203,7 @@ func (store *Postgres) ListMomentCandidates(ctx context.Context, ownerID string)
 	for rows.Next() {
 		var candidate moments.Candidate
 		if err := rows.Scan(&candidate.ID, &candidate.SourcePath, &candidate.CapturedAt, &candidate.Latitude,
-			&candidate.Longitude, &candidate.Embedding); err != nil {
+			&candidate.Longitude); err != nil {
 			return nil, err
 		}
 		candidates = append(candidates, candidate)
