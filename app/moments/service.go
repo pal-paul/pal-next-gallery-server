@@ -29,6 +29,7 @@ const (
 var (
 	ErrNotFound           = errors.New("moment not found")
 	ErrCandidatesAssigned = errors.New("moment candidates already assigned")
+	errDescriptionPending = errors.New("image description is pending")
 )
 
 type Moment struct {
@@ -58,6 +59,7 @@ type Media struct {
 
 type Candidate struct {
 	ID                  string    `json:"id"`
+	ReliableCapturedAt  bool      `json:"-"`
 	SourcePath          string    `json:"sourcePath"`
 	CapturedAt          time.Time `json:"capturedAt"`
 	Latitude            *float64  `json:"latitude,omitempty"`
@@ -87,12 +89,13 @@ type Repository interface {
 }
 
 type Service struct {
-	repository  Repository
-	clusterer   Clusterer
-	enricher    Enricher
-	describer   ImageDescriber
-	synthesizer MetadataSynthesizer
-	aiEnabled   bool
+	repository       Repository
+	clusterer        Clusterer
+	enricher         Enricher
+	describer        ImageDescriber
+	synthesizer      MetadataSynthesizer
+	aiEnabled        bool
+	queuedGeneration bool
 }
 
 func New(repository Repository, options ...Option) *Service {
@@ -113,6 +116,7 @@ func RegisterRoutes(router gin.IRoutes, service *Service) {
 	router.DELETE("/moments/:id", service.Delete)
 	router.POST("/moments/:id/metadata-suggestion", service.SuggestMomentMetadata)
 	router.POST("/albums/:id/metadata-suggestion", service.SuggestAlbumMetadata)
+	router.GET("/albums/:id/metadata-suggestion/:jobID", service.GetAlbumMetadataSuggestion)
 	router.POST("/moments/:id/media", service.AddMedia)
 	router.DELETE("/moments/:id/media/:mediaID", service.RemoveMedia)
 	router.PATCH("/moments/:id/cover", service.SetCover)
@@ -234,12 +238,12 @@ func (service *Service) Generate(ctx *gin.Context) {
 		return
 	}
 	ownerID := currentUser(ctx).ID
-	created, err := service.generateForOwner(ctx, ownerID)
+	queued, err := service.enqueueForOwner(ctx.Request.Context(), ownerID)
 	if err != nil {
 		respond(ctx, nil, err)
 		return
 	}
-	ctx.JSON(http.StatusOK, gin.H{"created": created})
+	ctx.JSON(http.StatusAccepted, gin.H{"created": 0, "queued": queued})
 }
 
 func (service *Service) SuggestMomentMetadata(ctx *gin.Context) {
@@ -248,8 +252,25 @@ func (service *Service) SuggestMomentMetadata(ctx *gin.Context) {
 }
 
 func (service *Service) SuggestAlbumMetadata(ctx *gin.Context) {
-	candidates, err := service.repository.ListAlbumMetadataCandidates(ctx, ctx.Param("id"), currentUser(ctx).ID, MetadataSampleSize)
-	service.respondMetadataSuggestion(ctx, candidates, err)
+	if !service.aiAvailable() {
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI features are disabled"})
+		return
+	}
+	if !validAlbumJobIDs(ctx) {
+		return
+	}
+	repository, ok := service.repository.(AlbumMetadataJobRepository)
+	if !ok {
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "metadata queue is unavailable"})
+		return
+	}
+	job, err := repository.EnqueueAlbumMetadataJob(ctx.Request.Context(), ctx.Param("id"), currentUser(ctx).ID)
+	if err != nil {
+		respond(ctx, nil, err)
+		return
+	}
+	ctx.Header("Location", fmt.Sprintf("/albums/%s/metadata-suggestion/%s", job.AlbumID, job.ID))
+	ctx.JSON(http.StatusAccepted, job)
 }
 
 func (service *Service) respondMetadataSuggestion(ctx *gin.Context, candidates []Candidate, err error) {
@@ -296,6 +317,9 @@ func (service *Service) describeCandidates(ctx context.Context, candidates []Can
 	for _, candidate := range candidates {
 		description, exists := byID[candidate.ID]
 		if !exists {
+			if service.queuedGeneration {
+				return nil, fmt.Errorf("%w: photo %s has not been described by the moment worker yet", errDescriptionPending, candidate.ID)
+			}
 			description, err = service.describer.Describe(ctx, candidate)
 			if err != nil {
 				return nil, err
@@ -316,6 +340,9 @@ func (service *Service) aiAvailable() bool {
 }
 
 func (service *Service) Run(ctx context.Context) error {
+	if !service.aiEnabled {
+		return nil
+	}
 	ownerIDs, err := service.repository.ListMomentOwners(ctx)
 	if err != nil {
 		return err
@@ -329,22 +356,14 @@ func (service *Service) Run(ctx context.Context) error {
 	return errors.Join(runErrors...)
 }
 
-func (service *Service) RunScheduled(ctx context.Context, interval time.Duration, onError func(error)) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := service.Run(ctx); err != nil && onError != nil {
-				onError(err)
-			}
-		}
-	}
-}
-
 func (service *Service) generateForOwner(ctx context.Context, ownerID string) (int, error) {
+	if !service.aiEnabled {
+		return 0, nil
+	}
+	if service.queuedGeneration {
+		_, err := service.enqueueForOwner(ctx, ownerID)
+		return 0, err
+	}
 	candidates, err := service.repository.ListMomentCandidates(ctx, ownerID)
 	if err != nil {
 		return 0, err
@@ -395,6 +414,14 @@ func (service *Service) generateForOwner(ctx context.Context, ownerID string) (i
 type semanticGroup struct {
 	candidates   []Candidate
 	descriptions []ImageDescription
+}
+
+func (service *Service) enqueueForOwner(ctx context.Context, ownerID string) (int64, error) {
+	repository, ok := service.repository.(JobRepository)
+	if !ok {
+		return 0, fmt.Errorf("moment queue repository is unavailable")
+	}
+	return repository.EnqueueMomentCandidates(ctx, ownerID)
 }
 
 func (service *Service) prepareSemanticGroups(ctx context.Context, groups [][]Candidate) ([]semanticGroup, error) {
@@ -702,6 +729,7 @@ func coordinateDistanceKM(latitude1, longitude1, latitude2, longitude2 float64) 
 	rightLatitude := latitude2 * math.Pi / 180
 	a := math.Sin(latitudeDelta/2)*math.Sin(latitudeDelta/2) +
 		math.Cos(leftLatitude)*math.Cos(rightLatitude)*math.Sin(longitudeDelta/2)*math.Sin(longitudeDelta/2)
+	a = math.Max(0, math.Min(1, a))
 	return earthRadiusKM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 

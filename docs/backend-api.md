@@ -345,7 +345,8 @@ support byte-range upload sessions.
 | `POST`   | `/albums/{albumId}/media`               | Add owned or shared media.                               |
 | `DELETE` | `/albums/{albumId}/media/{id}`          | Remove media from the album.                             |
 | `PATCH`  | `/albums/{albumId}/cover`               | Set an accessible album member as cover.                 |
-| `POST`   | `/albums/{albumId}/metadata-suggestion` | Suggest editable metadata from up to six sampled photos. |
+| `POST`   | `/albums/{albumId}/metadata-suggestion` | Accept an asynchronous metadata job with HTTP 202. |
+| `GET`    | `/albums/{albumId}/metadata-suggestion/{jobID}` | Poll the owner's suggestion job and result. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -376,7 +377,7 @@ Adding or removing Album media never calls Gemini.
 | -------- | ----------------------------------------- | -------------------------------------------------------- |
 | `GET`    | `/moments`                                | List the current user's moments.                         |
 | `POST`   | `/moments`                                | Create a user-edited manual draft.                       |
-| `POST`   | `/moments/generate`                       | Group currently unassigned processed photos.             |
+| `POST`   | `/moments/generate`                       | Queue unassigned processed photos; no synchronous inference. |
 | `GET`    | `/moments/{momentId}`                     | Get a moment and its photos.                             |
 | `PATCH`  | `/moments/{momentId}`                     | Edit metadata and lifecycle.                             |
 | `DELETE` | `/moments/{momentId}`                     | Delete the moment, not its photos.                       |
@@ -387,19 +388,19 @@ Adding or removing Album media never calls Gemini.
 
 <!-- markdownlint-enable MD013 MD060 -->
 
-Initial generation considers successfully processed photos captured within the
-previous seven days, falling back to upload time. The OpenCV worker combines
-capture time, CLIP similarity, perceptual hashes, and GPS; time-only grouping
-with a 30-minute gap is the fallback. Gemini describes selected visual
-representatives only when they have no cached description, semantically
-reconciles visual clusters, and generates title, description, and confidence.
-Groups must contain at least three photos and become drafts only when confidence
-is at least `0.65` and the description is non-empty.
+Completed image preprocessing inserts a durable description job. The separate
+`moments-worker` process describes each photo using Gemini, caches its structured
+description and its Gemini text embedding, and performs deterministic event matching
+using compatible descriptor-vector cosine similarity plus reliable capture time and
+GPS. Legacy or incompatible vectors fall back to descriptor tokens. At least five distinct matching
+photos create a draft; uncertain photos remain unassigned. Later matching photos
+join existing moments without regenerating their titles or descriptions.
 
-Semantic reconciliation uses `location_type`, visual evidence, capture time,
-and GPS. Its deterministic context pass distinguishes `public_venue`,
-`outdoor_activity`, `home_or_private`, `event_or_celebration`, `travel`, and
-`unknown`; unknown evidence is preserved rather than forced into a venue type.
+`POST /moments/generate` returns HTTP `202 Accepted` with
+`{"created":0,"queued":N}` after enqueueing
+eligible processed images for the authenticated owner. It does not impose a
+seven-day capture-date cutoff or wait for model calls. The compatibility field
+`created` is always zero. The HTTP handler never performs generation inline.
 
 Manual Moments require at least one photo and always start as user-edited
 drafts. Drafts can be edited, have photos added or removed, and be published by
@@ -409,21 +410,37 @@ future generation. Deleting any Moment never deletes source media. Already
 assigned photos are skipped on later runs, and the database prevents a photo
 from belonging to multiple Moments for the same owner.
 
-Background generation runs every 168 hours by default. Set
-`ENV_MOMENTS_INTERVAL` to another positive Go duration such as `24h` or `336h`.
-Set `ENV_AI_FEATURE=NO` to disable CLIP embeddings, Gemini providers, scheduled
-and manual AI generation, and AI metadata suggestions. Uploads, manual Moments,
-and Album management continue to work. With AI enabled, a Gemini API key is
-still required for generation and suggestions. Go defaults the vision and text
-models to `gemini-3.5-flash-lite`. Operators can override both with
-`ENV_MOMENTS_GEMINI_MODEL` and `ENV_MOMENTS_GEMINI_TEXT_MODEL`.
+`ENV_MOMENTS_DAILY_IMAGE_LIMIT` defaults to `100` image-description attempts per
+UTC day shared across workers. Zero pauses processing. Quota reservations survive
+restarts; failed attempts count, while cached-description retries do not. Event
+naming and descriptor embedding are separate text requests outside this image quota.
+The weekly moment scheduler and its interval setting have been removed. Upload
+preprocessing completion triggers work; there is no scheduled library-wide sweep.
 
-Gemini is not called when a photo is uploaded or merely added to a Moment or
-Album. Upload processing sends the thumbnail to the private CLIP service once
-to persist an embedding. A user-triggered metadata suggestion randomly samples
-at most six member photos, reuses stored image descriptions, calls Gemini Vision
-only for cache misses, then makes one Gemini Text request. The response is a
-suggestion; it does not update the collection until the user saves it.
+Set `ENV_AI_FEATURE=NO` in both server and worker environments and recreate the
+services. Disabled
+workers make no Gemini calls and retain the queue. Uploads, manual Moments, and
+Album management continue to work. Both Gemini models default to
+`gemini-3.5-flash-lite` and remain independently configurable.
+`ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001`, using
+768-dimensional descriptor-text vectors. Embedding failures retain the cached
+description for retry without another vision call.
+
+Gemini is not called by upload handlers or manual membership changes. Album
+metadata suggestions return HTTP `202 Accepted` with `id`, `albumId`, and `status`,
+plus a `Location` header pointing to the owner-scoped polling URL. The durable job
+survives restarts, reuses active submissions, and is processed by `moments-worker`.
+Poll for `pending`, `running`, `completed` (with `result`), or `failed` (with
+`error`). Completed results remain available and never overwrite Album metadata.
+The web dialog polls in the background and stops polling when closed.
+
+Album jobs wait for missing cached descriptions rather than calling vision
+outside the daily quota. Photos excluded from moment processing need descriptions
+already cached; otherwise their suggestion remains pending. Text-provider errors
+produce failed jobs, and a new POST can retry. Expired worker leases are reclaimed.
+The separate Moment metadata-suggestion endpoint remains synchronous and reports
+an error for missing cached descriptions. Both kinds of suggestions require a
+normal user save to update the collection.
 
 Create or update an album:
 

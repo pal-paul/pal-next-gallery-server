@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useState } from 'react'
+import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
 import { ApiError, demoMode } from './api/apiClient'
 import { galleryApi } from './api/galleryApi'
@@ -43,6 +43,8 @@ function App({ onLogout }: Props) {
 	const [creatingMoment, setCreatingMoment] = useState(false)
   const [aiEnabled, setAiEnabled] = useState(false)
   const [albumAiPending, setAlbumAiPending] = useState(false)
+  const [albumAiError, setAlbumAiError] = useState<{ albumId: GalleryID; message: string }>()
+  const albumSuggestionController = useRef<AbortController | null>(null)
   const [activeAlbumId, setActiveAlbumId] = useState<GalleryID | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<MediaFilter>('all')
@@ -86,6 +88,8 @@ function App({ onLogout }: Props) {
   }, [])
 
   const activeAlbum = albums.find((album) => album.id === activeAlbumId)
+  useEffect(() => () => albumSuggestionController.current?.abort(), [activeAlbumId, showEditAlbum])
+
   const visibleMedia = media
     .filter((item) => view === 'trash' ? Boolean(item.deletedAt) : !item.deletedAt)
     .filter((item) => activeAlbum ? activeAlbum.mediaIds.includes(item.id) : true)
@@ -418,13 +422,22 @@ function App({ onLogout }: Props) {
 
   const suggestAlbumMetadata = async () => {
     if (!activeAlbum || albumAiPending) return
+    const controller = new AbortController()
+    albumSuggestionController.current?.abort()
+    albumSuggestionController.current = controller
+    setAlbumAiError(undefined)
     setAlbumAiPending(true)
     try {
-      const suggestion = await galleryApi.suggestAlbumMetadata(activeAlbum.id)
+      const suggestion = await galleryApi.suggestAlbumMetadata(activeAlbum.id, controller.signal)
+      if (controller.signal.aborted) return
       setEditAlbumName(suggestion.title)
       setEditAlbumDescription(suggestion.description)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setAlbumAiError({ albumId: activeAlbum.id, message: error instanceof Error ? error.message : 'Unable to generate album metadata.' })
+      }
     } finally {
-      setAlbumAiPending(false)
+      if (albumSuggestionController.current === controller) setAlbumAiPending(false)
     }
   }
 
@@ -458,7 +471,7 @@ function App({ onLogout }: Props) {
       </main>
       <CreateAlbumDialog open={showCreate} name={newAlbumName} onNameChange={setNewAlbumName} onClose={() => setShowCreate(false)} onCreate={createAlbum} />
       <ShareMediaDialog open={Boolean(shareMediaId)} username={shareUsername} permission={sharePermission} error={shareError} pending={sharing} onUsernameChange={(value) => { setShareUsername(value); setShareError(undefined) }} onPermissionChange={(value) => { setSharePermission(value); setShareError(undefined) }} onClose={() => { if (!sharing) setShareMediaId(null) }} onShare={() => void shareMedia()} />
-      {activeAlbum && <EditAlbumDialog key={`${activeAlbum.id}-${showEditAlbum}-${editAlbumAdding}`} open={showEditAlbum} album={activeAlbum} media={media} name={editAlbumName} description={editAlbumDescription} coverMediaId={editCoverMediaId} onNameChange={setEditAlbumName} onDescriptionChange={setEditAlbumDescription} onCoverChange={setEditCoverMediaId} onClose={() => setShowEditAlbum(false)} onSave={saveAlbumEdits} aiEnabled={aiEnabled} aiPending={albumAiPending} onSuggestMetadata={() => void suggestAlbumMetadata()} startAdding={editAlbumAdding} onAddMedia={addMediaToActiveAlbum} />}
+      {activeAlbum && <EditAlbumDialog key={`${activeAlbum.id}-${showEditAlbum}-${editAlbumAdding}`} open={showEditAlbum} album={activeAlbum} media={media} name={editAlbumName} description={editAlbumDescription} coverMediaId={editCoverMediaId} onNameChange={setEditAlbumName} onDescriptionChange={setEditAlbumDescription} onCoverChange={setEditCoverMediaId} onClose={() => setShowEditAlbum(false)} onSave={saveAlbumEdits} aiEnabled={aiEnabled} aiPending={albumAiPending} aiError={albumAiError?.albumId === activeAlbum.id ? albumAiError.message : undefined} onSuggestMetadata={() => void suggestAlbumMetadata()} startAdding={editAlbumAdding} onAddMedia={addMediaToActiveAlbum} />}
       {viewerItem && <MediaViewer item={viewerItem} hasMultiple={visibleMedia.length > 1} onClose={() => setViewerMediaId(null)} onPrevious={() => showViewerItem(-1)} onNext={() => showViewerItem(1)} />}
     </div>
   )

@@ -17,12 +17,13 @@ type Props = {
   onSave: () => void
   aiEnabled: boolean
   aiPending: boolean
+  aiError?: string
   onSuggestMetadata: () => void
   startAdding: boolean
   onAddMedia: (mediaIds: string[]) => Promise<void>
 }
 
-export function EditAlbumDialog({ open, album, media, name, description, coverMediaId, onNameChange, onDescriptionChange, onCoverChange, onClose, onSave, aiEnabled, aiPending, onSuggestMetadata, startAdding, onAddMedia }: Props) {
+export function EditAlbumDialog({ open, album, media, name, description, coverMediaId, onNameChange, onDescriptionChange, onCoverChange, onClose, onSave, aiEnabled, aiPending, aiError, onSuggestMetadata, startAdding, onAddMedia }: Props) {
   const [adding, setAdding] = useState(startAdding)
   const [selected, setSelected] = useState<string[]>([])
   const [addingPending, setAddingPending] = useState(false)
@@ -54,6 +55,7 @@ export function EditAlbumDialog({ open, album, media, name, description, coverMe
       <section className="modal edit-album-modal" role="dialog" aria-modal="true" aria-labelledby="edit-album-title" onMouseDown={(event) => event.stopPropagation()}>
         <header><div className="modal-icon"><Pencil size={20} /></div><button className="icon-button" onClick={onClose} title="Close"><X size={19} /></button></header>
         <h2 id="edit-album-title">Edit album</h2>
+        {aiError && <p role="alert">{aiError}</p>}
     <button className="secondary-button ai-suggest-button" onClick={() => setAdding((value) => !value)}><Plus size={16} /> Add images</button>
     {adding && <section className="album-image-picker" aria-label="Add images to album">
       {availablePhotos.length > 0 ? <><div className="moment-picker">{availablePhotos.map((item) => <button type="button" aria-label={`Select ${item.title}`} aria-pressed={selected.includes(item.id)} className={selected.includes(item.id) ? 'selected' : ''} key={item.id} onClick={() => toggleSelected(item.id)}><AuthenticatedImage src={item.thumbnailUrl ?? item.url} alt="" />{selected.includes(item.id) && <span><Check size={14} /></span>}</button>)}</div><div className="album-picker-actions"><span>{selected.length} selected</span><button className="primary-button" disabled={selected.length === 0 || addingPending} onClick={() => void addSelected()}>{addingPending ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />} Add selected</button></div></> : <p className="cover-empty">All available photos are already in this album.</p>}

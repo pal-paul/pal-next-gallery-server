@@ -220,7 +220,8 @@ func (store *Postgres) ListImageDescriptions(ctx context.Context, mediaIDs []str
 	rows, err := store.pool.Query(ctx, `SELECT DISTINCT ON (description.upload_id)
 		description.upload_id, description.model, description.version, description.people,
 		description.activities, description.location_type, description.objects, description.scene,
-		description.weather, description.description
+		description.weather, description.description, description.keywords,
+		description.text_embedding, description.text_embedding_model
 		FROM media_image_descriptions description
 		WHERE description.upload_id = ANY($1)
 		ORDER BY description.upload_id, description.created_at DESC`, mediaIDs)
@@ -233,7 +234,8 @@ func (store *Postgres) ListImageDescriptions(ctx context.Context, mediaIDs []str
 		var description moments.ImageDescription
 		if err := rows.Scan(&description.MediaID, &description.Model, &description.Version, &description.People,
 			&description.Activities, &description.LocationType, &description.Objects, &description.Scene,
-			&description.Weather, &description.Description); err != nil {
+			&description.Weather, &description.Description, &description.Keywords,
+			&description.Embedding, &description.EmbeddingModel); err != nil {
 			return nil, err
 		}
 		descriptions = append(descriptions, description)
@@ -249,13 +251,18 @@ func (store *Postgres) SaveImageDescriptions(ctx context.Context, descriptions [
 	defer func() { _ = transaction.Rollback(ctx) }()
 	for _, description := range descriptions {
 		if _, err := transaction.Exec(ctx, `INSERT INTO media_image_descriptions
-			(upload_id, model, version, people, activities, location_type, objects, scene, weather, description)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			(upload_id, model, version, people, activities, location_type, objects, scene, weather, description,
+			keywords, text_embedding, text_embedding_model)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			COALESCE($11::text[], '{}'), COALESCE($12::double precision[], '{}'), $13)
 			ON CONFLICT (upload_id, model, version) DO UPDATE SET people = EXCLUDED.people,
 			activities = EXCLUDED.activities, location_type = EXCLUDED.location_type, objects = EXCLUDED.objects,
-			scene = EXCLUDED.scene, weather = EXCLUDED.weather, description = EXCLUDED.description, created_at = now()`,
+			scene = EXCLUDED.scene, weather = EXCLUDED.weather, description = EXCLUDED.description,
+			keywords = EXCLUDED.keywords, text_embedding = EXCLUDED.text_embedding,
+			text_embedding_model = EXCLUDED.text_embedding_model, created_at = now()`,
 			description.MediaID, description.Model, description.Version, description.People, description.Activities,
-			description.LocationType, description.Objects, description.Scene, description.Weather, description.Description); err != nil {
+			description.LocationType, description.Objects, description.Scene, description.Weather, description.Description,
+			description.Keywords, description.Embedding, description.EmbeddingModel); err != nil {
 			return err
 		}
 	}

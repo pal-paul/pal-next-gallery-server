@@ -140,8 +140,9 @@ prevent a stored cookie from being sent.
   and the required Gemini providers are configured. Clients should hide or
   disable AI actions when it is false.
 - `POST /moments` creates a manual, user-edited draft from one or more photos.
-  `POST /moments/generate` runs AI-assisted discovery immediately; the default
-  background interval is `168h`.
+  `POST /moments/generate` queues eligible photos without waiting for inference.
+  Upload preprocessing also queues photos automatically; there is no weekly
+  moment scheduler.
 - Generated Moments remain drafts until the user publishes them. Users can edit
   title and description, add or remove photos, select a cover, or delete a
   draft. Deleting a declined draft does not delete media and makes those photos
@@ -150,12 +151,15 @@ prevent a stored cookie from being sent.
 /albums/{id}/metadata-suggestion` randomly sample at most six member photos,
   reuse cached descriptions, and return editable title and description
   suggestions. They do not update the collection directly.
-- Uploading an image does not call Gemini. When AI is enabled, background media
-  processing creates one local CLIP embedding. Gemini Vision is used later only
-  for selected images without cached descriptions; Gemini Text synthesizes
-  metadata from those descriptions.
-- `ENV_AI_FEATURE=NO` disables CLIP embeddings, Gemini configuration, scheduled
-  Moment discovery, manual AI discovery, and metadata suggestions. Uploads,
+- Upload handlers do not call Gemini. The separate moment worker caches each
+  eligible image's description and Gemini descriptor-text embedding, then uses
+  cosine/time/GPS event matching. Five distinct matching photos create a named
+  draft; later additions keep the name. CLIP pixel embeddings are separate.
+- `ENV_MOMENTS_DAILY_IMAGE_LIMIT=100` limits image-description attempts per UTC
+  day; embedding and naming text calls are separate. Cached retries reuse features.
+- `ENV_AI_FEATURE=NO` disables CLIP embeddings, Gemini worker inference,
+  manual AI discovery, and metadata suggestions. Recreate server and worker to
+  apply the setting. Uploads,
   manual Moments, Albums, and all non-AI editing remain available.
 
 ## Album editing

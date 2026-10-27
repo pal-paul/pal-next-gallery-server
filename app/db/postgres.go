@@ -173,6 +173,36 @@ CREATE TABLE IF NOT EXISTS media_image_descriptions (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (upload_id, model, version)
 );
+ALTER TABLE media_image_descriptions ADD COLUMN IF NOT EXISTS keywords TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE media_image_descriptions ADD COLUMN IF NOT EXISTS text_embedding DOUBLE PRECISION[] NOT NULL DEFAULT '{}';
+ALTER TABLE media_image_descriptions ADD COLUMN IF NOT EXISTS text_embedding_model TEXT NOT NULL DEFAULT '';
+CREATE OR REPLACE FUNCTION gallery_text_cosine(left_values DOUBLE PRECISION[], right_values DOUBLE PRECISION[])
+RETURNS DOUBLE PRECISION LANGUAGE SQL IMMUTABLE STRICT AS $$
+	WITH pairs AS (
+		SELECT first_value, second_value FROM unnest(left_values, right_values) pair(first_value, second_value)
+		WHERE abs(first_value) <= 1e100 AND abs(second_value) <= 1e100
+	), stats AS (
+		SELECT COUNT(*) AS dimensions, SUM(first_value * second_value) AS dot,
+		SUM(first_value * first_value) AS first_norm, SUM(second_value * second_value) AS second_norm FROM pairs
+	)
+	SELECT CASE WHEN dimensions > 0 AND dimensions = cardinality(left_values)
+		AND dimensions = cardinality(right_values) AND first_norm > 0 AND second_norm > 0
+		THEN GREATEST(-1, LEAST(1, dot / (sqrt(first_norm) * sqrt(second_norm)))) END FROM stats
+$$;
+CREATE TABLE IF NOT EXISTS moment_description_jobs (
+	upload_id TEXT PRIMARY KEY REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
+	lease_token TEXT,
+	lease_until TIMESTAMPTZ,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT,
+	scheduled_for TIMESTAMPTZ NOT NULL DEFAULT now(),
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS moment_description_jobs_queue_idx ON moment_description_jobs(scheduled_for, created_at);
+CREATE TABLE IF NOT EXISTS moment_daily_usage (
+	usage_day DATE PRIMARY KEY,
+	image_attempts INTEGER NOT NULL DEFAULT 0 CHECK (image_attempts >= 0)
+);
 CREATE TABLE IF NOT EXISTS media_shares (
 	upload_id TEXT NOT NULL REFERENCES media_uploads(upload_id) ON DELETE CASCADE,
 	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -214,6 +244,20 @@ ALTER TABLE albums ADD COLUMN IF NOT EXISTS position INTEGER;
 ALTER TABLE albums ADD COLUMN IF NOT EXISTS cover_media_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS albums_owner_position_idx ON albums(owner_id, position, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS albums_owner_auto_key_idx ON albums(owner_id, auto_key) WHERE auto_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS album_metadata_jobs (
+	id UUID PRIMARY KEY,
+	album_id UUID NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+	result JSONB,
+	error TEXT NOT NULL DEFAULT '',
+	lease_token TEXT,
+	lease_until TIMESTAMPTZ,
+	scheduled_for TIMESTAMPTZ NOT NULL DEFAULT now(),
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS album_metadata_jobs_active_idx ON album_metadata_jobs(album_id, owner_id)
+	WHERE status IN ('pending', 'running');
 CREATE TABLE IF NOT EXISTS takeout_albums (
 	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	source_key TEXT NOT NULL,

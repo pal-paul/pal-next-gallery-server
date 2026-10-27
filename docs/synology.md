@@ -140,23 +140,24 @@ user.
 
 ## Moments
 
-Moment generation considers unassigned, processed photos captured within the
-previous seven days. A group must contain at least three photos. Gemini receives
-selected representatives that do not already have cached descriptions, then a
-text-only request generates metadata. The Moment is created as a draft only
-when confidence is at least `0.65`. Each photo can belong to only one generated
-Moment for that owner. Deleting a declined draft preserves the source photos and
-returns them to the future candidate pool.
+Completed upload preprocessing queues each eligible image for the separate
+`moments-worker` service. When enabled, it caches a Gemini description and a
+descriptor-text embedding, retrieves a bounded semantic/time/GPS neighborhood,
+and applies deterministic event rules. Five distinct matching photos create a
+draft; later photos join without renaming it. There is no seven-day cutoff or
+weekly moment scheduler. Deleting a draft preserves its source photos.
 
-Gemini is not called for each upload. With AI enabled, the private CPU CLIP
-service embeds the generated thumbnail during normal media processing. Moment
-generation and user-triggered Moment or Album metadata suggestions call Gemini
-later. Metadata suggestions randomly sample at most six member photos and reuse
-cached descriptions.
+Configure both server and worker with `ENV_AI_FEATURE=YES`.
+Set it to `NO` and recreate both services
+to pause Gemini calls while retaining queued work. The worker defaults to
+`ENV_MOMENTS_DAILY_IMAGE_LIMIT=100` new image-description attempts per UTC day;
+descriptor embedding and event naming calls are outside that image limit.
+`ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001` with
+768-dimensional text vectors. Descriptions/vectors remain cached after job removal.
 
-Change `ENV_MOMENTS_INTERVAL` to control background generation; `168h` runs it
-weekly. The Compose project pulls the private multi-architecture CPU CLIP image
-from GHCR and caches its model under
+Upload handlers never call Gemini. CLIP remains a separate pixel-embedding
+feature and is not used for event semantics. The Compose project pulls its private
+multi-architecture CPU image from GHCR and caches its model under
 `/volume1/docker/next-gallery-server/models`. The gallery waits for that service
 to become healthy before processing uploads.
 

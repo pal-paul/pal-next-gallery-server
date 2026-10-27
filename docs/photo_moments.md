@@ -1,5 +1,11 @@
 # Photo Moments: Production Architecture and Flow
 
+> The event-driven pipeline supersedes the scheduled OpenCV/Gemini-merge flow
+> described below. Current operation uses the separate `moments-worker`, durable
+> description jobs, a shared daily image budget, and deterministic event matching.
+> See [the current worker implementation](clustering.md#current-worker-implementation).
+> The remaining sections are historical architecture notes, not current setup instructions.
+
 <!-- markdownlint-disable MD013 -->
 
 ## 1. Purpose
@@ -535,8 +541,8 @@ erDiagram
 | Trigger             | Default                             | Behavior                                            |
 | ------------------- | ----------------------------------- | --------------------------------------------------- |
 | Processing worker   | Continuous                          | Drains queued jobs; waits five seconds when idle    |
-| Moment generation   | Every `168h`                        | Runs for all users after each interval tick         |
-| Manual generation   | `POST /moments/generate`            | Runs immediately for the authenticated owner        |
+| Moment generation   | Upload preprocessing completion    | Queues description, text embedding, and event matching |
+| Manual generation   | `POST /moments/generate`            | Queues eligible photos for the authenticated owner  |
 | Manual creation     | `POST /moments`                     | Creates a user-edited draft without calling AI      |
 | Metadata suggestion | Explicit Moment or Album action     | Samples up to six members and returns editable text |
 | Automatic albums    | Daily at `02:00` local time         | Separate feature; reconciles albums, not moments    |
@@ -545,7 +551,9 @@ erDiagram
 
 <!-- markdownlint-enable MD060 -->
 
-The moment scheduler does not run immediately at startup. Operators can use the manual endpoint for an initial run or wait for the first interval.
+The weekly moment scheduler has been removed. The separate moment worker drains
+ready queued photos immediately, waiting five seconds only when idle. Use the
+manual endpoint to enqueue existing unassigned photos without a library-wide schedule.
 
 ## 13. Runtime Configuration
 
@@ -566,9 +574,9 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 
 | Variable                        | Default                           | Effect when empty                                                 |
 | ------------------------------- | --------------------------------- | ----------------------------------------------------------------- |
-| `ENV_AI_FEATURE`                | `YES`                             | `NO` disables every AI-backed path                                |
-| `ENV_MOMENTS_INTERVAL`          | `168h`                            | Invalid or non-positive values stop startup                       |
-| `ENV_MOMENTS_CV_WORKER`         | empty                             | Uses temporal clustering                                          |
+| `ENV_AI_FEATURE`                | `YES`                             | `NO` disables every AI-backed path and retains the moment queue  |
+| `ENV_MOMENTS_DAILY_IMAGE_LIMIT` | `100`                             | New image-description attempts per UTC day; zero pauses processing |
+| `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001`         | 768-dimensional descriptor-text vectors, not CLIP pixels          |
 | `ENV_MOMENTS_EMBEDDING_URL`     | `http://embedding-api:8000/embed` | Private Compose embedding endpoint                                |
 | `ENV_MOMENTS_EMBEDDING_MODEL`   | `openai/clip-vit-base-patch32`    | CLIP model loaded by the endpoint                                 |
 | `ENV_MOMENTS_GEMINI_API_KEY`    | empty                             | Automatic moment creation is skipped                              |
@@ -580,7 +588,8 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 
 ### Fixed algorithm values
 
-These values are currently compile-time constants:
+The following table describes the legacy implementation only. Current event
+scoring and five-photo promotion defaults are documented in [clustering.md](clustering.md).
 
 | Setting                       | Value      |
 | ----------------------------- | ---------- |
@@ -605,12 +614,12 @@ These values are currently compile-time constants:
 
 ### Full intelligence profile
 
-- Verify `/app/worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
+- Start `/app/moments-worker` separately and enable Gemini in both services.
 - Ensure the worker can read the same media paths as the server.
 - Allow the embedding container to download and cache its model before the first upload.
 - Configure a restricted paid-tier Gemini API key.
 - Confirm the server can reach the Gemini API over HTTPS.
-- Run one manual generation request before relying on the weekly scheduler.
+- Verify a new upload queues description, embedding, and event evaluation.
 
 ### Security and privacy
 

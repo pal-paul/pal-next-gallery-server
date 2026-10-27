@@ -58,7 +58,6 @@ services:
       - ../.env
     environment:
       ENV_AI_FEATURE: ${ENV_AI_FEATURE:-NO}
-      ENV_MOMENTS_CV_WORKER: /app/worker
       ENV_MOMENTS_GEMINI_URL: ${ENV_MOMENTS_GEMINI_URL:-https://generativelanguage.googleapis.com/v1beta}
       ENV_MOMENTS_GEMINI_API_KEY: ${ENV_MOMENTS_GEMINI_API_KEY:-}
       ENV_MOMENTS_GEMINI_MODEL: ${ENV_MOMENTS_GEMINI_MODEL:-gemini-3.5-flash-lite}
@@ -82,6 +81,29 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE}
+        max-file: "${LOG_MAX_FILES}"
+    restart: ${COMPOSE_RESTART_POLICY}
+
+  moments-worker:
+    image: ${SERVER_IMAGE}
+    entrypoint: ["/app/moments-worker"]
+    env_file:
+      - ../.env
+    environment:
+      ENV_AI_FEATURE: ${ENV_AI_FEATURE:-NO}
+      ENV_MOMENTS_DAILY_IMAGE_LIMIT: ${ENV_MOMENTS_DAILY_IMAGE_LIMIT:-100}
+      ENV_MOMENTS_GEMINI_EMBEDDING_MODEL: ${ENV_MOMENTS_GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+    volumes:
+      - media_data:${ENV_MEDIA_DIR}:ro
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      disable: true
     logging:
       driver: json-file
       options:

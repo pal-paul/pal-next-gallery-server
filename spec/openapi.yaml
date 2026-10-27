@@ -60,18 +60,19 @@ info:
 
     ## Moments
 
-    Moments are separate from albums. Generation groups successfully processed,
-    unassigned photos from the previous seven days using capture time, visual
-    similarity, GPS, and optional Gemini semantic reconciliation. Generated and
-    manually created Moments begin as drafts. Groups require at least three
-    photos, while manual Moments require at least one. Deleting or declining a
+    Moments are separate from albums. Upload preprocessing completion queues a
+    photo for a separate worker that caches a Gemini description and descriptor-text
+    embedding. Deterministic event matching combines compatible text-vector cosine
+    similarity with reliable capture time and GPS, using a bounded neighborhood.
+    Generated and manually created Moments begin as drafts. Generated groups require
+    at least five distinct matching photos; manual Moments require at least one. Deleting or declining a
     draft removes only its Moment membership, making its photos eligible for a
     later generation run; source photos are never deleted.
 
-    Gemini is not called during upload. When AI is enabled, upload processing
-    stores a local CLIP embedding. Moment generation sends only selected visual
-    representatives without cached descriptions to Gemini Vision, then sends
-    structured descriptions to Gemini Text. User-triggered Moment and Album
+    Upload handlers never call Gemini. The separate moment worker describes and
+    embeds each eligible photo, reuses cached features on retry, and names a new
+    moment only on promotion. Later matches retain its title and description.
+    CLIP pixel embeddings are separate from descriptor-text vectors. User-triggered Moment and Album
     metadata suggestions randomly sample at most six member photos and reuse
     cached descriptions.
 
@@ -93,12 +94,17 @@ info:
     - `ENV_ISSUER` is displayed by authenticator applications.
     - `ENV_AUTO_ALBUM_RUN_AT` defaults to `02:00`; `ENV_AUTO_ALBUM_TIMEZONE`
       accepts an IANA timezone and defaults to the host's local timezone.
-    - `ENV_MOMENTS_INTERVAL` controls background moment generation and defaults
-      to `168h`.
+    - Moment processing is upload-triggered; the weekly scheduler has been removed.
+    - `ENV_MOMENTS_DAILY_IMAGE_LIMIT` defaults to `100` image-description attempts
+      per UTC day across workers; zero pauses processing. Embedding and naming
+      text requests are separate from this image quota.
+    - `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001` with
+      768-dimensional descriptor-text vectors and compatible-model cosine retrieval.
     - `ENV_AI_FEATURE` defaults to `YES`. Setting it to `NO` disables CLIP
-      embeddings, Gemini configuration, scheduled and manual AI generation, and
+      embeddings, Gemini worker inference, manual AI discovery, and
       AI metadata suggestions without disabling uploads, Albums, or manual
-      Moment management.
+      Moment management. Queued work is retained; recreate server and worker
+      after changing this setting.
 
     PostgreSQL stores users, sessions, challenges, completed-media metadata,
     sharing, albums, and preferences. Active upload chunks and their recovery
@@ -752,18 +758,19 @@ paths:
     post:
       tags: [Moments]
       operationId: generateMoments
-      summary: Generate moments from unassigned processed photos
+      summary: Queue unassigned processed photos for asynchronous moment generation
       responses:
-        "200":
-          description: Number of drafts created.
+        "202":
+          description: Photos queued for the separate worker. No inference runs in this request.
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: false
-                required: [created]
+                required: [created, queued]
                 properties:
                   created: { type: integer, minimum: 0 }
+                  queued: { type: integer, minimum: 0 }
         "403":
           $ref: "#/components/responses/Forbidden"
         "503":
@@ -823,19 +830,40 @@ paths:
     post:
       tags: [Gallery]
       operationId: suggestAlbumMetadata
-      summary: Suggest an Album title and description with Gemini
-      description: Randomly samples at most six Album photos, reuses cached image descriptions, and returns a suggestion without updating the Album. The user may edit and save the result normally.
+      summary: Queue an asynchronous Album metadata suggestion
+      description: Returns immediately after persisting a job. The separate moments worker samples at most six accessible Album photos and synthesizes metadata from cached descriptions. Missing descriptions leave the job pending without bypassing the daily image quota. The Album is not updated automatically. Repeated submissions reuse an active job.
       parameters:
         - $ref: "#/components/parameters/AlbumID"
       responses:
-        "200":
-          description: Suggested metadata for user review.
+        "202":
+          description: Durable suggestion job accepted. Poll the Location URL for its status and result.
+          headers:
+            Location:
+              description: Owner-scoped job status URL.
+              schema: { type: string }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/MetadataSuggestion" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+              schema: { $ref: "#/components/schemas/AlbumMetadataJob" }
         "404": { $ref: "#/components/responses/ResourceNotFound" }
         "503": { description: AI features are disabled or unavailable. }
+  /albums/{albumId}/metadata-suggestion/{jobID}:
+    get:
+      tags: [Gallery]
+      operationId: getAlbumMetadataSuggestion
+      summary: Get the status and result of an Album metadata suggestion
+      parameters:
+        - $ref: "#/components/parameters/AlbumID"
+        - name: jobID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Pending, running, completed, or failed job. Completed jobs include editable metadata; failed jobs include an error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlbumMetadataJob" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
   /moments/{momentId}/media:
     post:
       tags: [Moments]
@@ -2085,6 +2113,18 @@ components:
         title: { type: string }
         description: { type: string }
         confidence: { type: number, minimum: 0, maximum: 1 }
+    AlbumMetadataJob:
+      type: object
+      additionalProperties: false
+      required: [id, albumId, status]
+      properties:
+        id: { type: string, format: uuid }
+        albumId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        result: { $ref: "#/components/schemas/MetadataSuggestion" }
+        error:
+          type: string
+          description: A safe failure message or an explanation of what a pending job is waiting for.
     MomentMediaInput:
       type: object
       additionalProperties: false

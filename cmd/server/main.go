@@ -65,8 +65,6 @@ type Environment struct {
 	Issuer                 string `env:"ENV_ISSUER,default=issuer.palpaul.com"`
 	AutoAlbumRunAt         string `env:"ENV_AUTO_ALBUM_RUN_AT,default=02:00"`
 	AutoAlbumZone          string `env:"ENV_AUTO_ALBUM_TIMEZONE,default=Local"`
-	MomentsInterval        string `env:"ENV_MOMENTS_INTERVAL,default=168h"`
-	MomentsCVWorker        string `env:"ENV_MOMENTS_CV_WORKER"`
 	MomentsGeminiURL       string `env:"ENV_MOMENTS_GEMINI_URL,default=https://generativelanguage.googleapis.com/v1beta"`
 	MomentsGeminiAPIKey    string `env:"ENV_MOMENTS_GEMINI_API_KEY"`
 	MomentsGeminiModel     string `env:"ENV_MOMENTS_GEMINI_MODEL,default=gemini-3.5-flash-lite"`
@@ -93,6 +91,23 @@ func main() {
 	}
 }
 
+func configuredMomentOptions(aiEnabled bool) ([]moments.Option, error) {
+	apiKey := strings.TrimSpace(envVar.MomentsGeminiAPIKey)
+	enabled := aiEnabled && apiKey != ""
+	options := []moments.Option{moments.WithAIFeaturesEnabled(enabled), moments.WithQueuedGeneration()}
+	if !enabled {
+		return options, nil
+	}
+	enricher, err := moments.NewGeminiPipeline(envVar.MomentsGeminiURL, apiKey, envVar.MomentsGeminiModel, envVar.MomentsGeminiTextModel, envVar.MediaDir)
+	if err != nil {
+		return nil, fmt.Errorf("configure moment metadata enrichment: %w", err)
+	}
+	options = append(options, moments.WithImageDescriber(enricher), moments.WithMetadataSynthesizer(enricher))
+	slog.Info("moment metadata enrichment enabled", "provider", "gemini", "vision_model", envVar.MomentsGeminiModel,
+		"text_model", envVar.MomentsGeminiTextModel)
+	return options, nil
+}
+
 func run() error {
 	if strings.TrimSpace(envVar.DatabaseURL) == "" {
 		return fmt.Errorf("ENV_DATABASE_URL is required")
@@ -108,10 +123,6 @@ func run() error {
 	uploadRetention, err := time.ParseDuration(envVar.UploadRetention)
 	if err != nil || uploadRetention <= 0 {
 		return fmt.Errorf("ENV_UPLOAD_RETENTION must be a positive duration")
-	}
-	momentsInterval, err := time.ParseDuration(envVar.MomentsInterval)
-	if err != nil || momentsInterval <= 0 {
-		return fmt.Errorf("ENV_MOMENTS_INTERVAL must be a positive duration")
 	}
 	trustedProxies, err := parseTrustedProxies(envVar.TrustedProxies)
 	if err != nil {
@@ -172,19 +183,9 @@ func run() error {
 	}
 	userService := userapp.NewService(database, envVar.Issuer, envVar.MediaDir)
 	galleryService := gallery.NewService(database, envVar.MediaDir)
-	momentOptions := []moments.Option{moments.WithAIFeaturesEnabled(aiEnabled)}
-	if worker := strings.TrimSpace(envVar.MomentsCVWorker); aiEnabled && worker != "" {
-		momentOptions = append(momentOptions, moments.WithClusterer(moments.NewCommandClusterer(worker, envVar.MediaDir)))
-		slog.Info("visual moment clustering enabled", "worker", worker)
-	}
-	if apiKey := strings.TrimSpace(envVar.MomentsGeminiAPIKey); aiEnabled && apiKey != "" {
-		enricher, err := moments.NewGeminiPipeline(envVar.MomentsGeminiURL, apiKey, envVar.MomentsGeminiModel, envVar.MomentsGeminiTextModel, envVar.MediaDir)
-		if err != nil {
-			return fmt.Errorf("configure moment metadata enrichment: %w", err)
-		}
-		momentOptions = append(momentOptions, moments.WithImageDescriber(enricher), moments.WithMetadataSynthesizer(enricher))
-		slog.Info("moment metadata enrichment enabled", "provider", "gemini", "vision_model", envVar.MomentsGeminiModel,
-			"text_model", envVar.MomentsGeminiTextModel)
+	momentOptions, err := configuredMomentOptions(aiEnabled)
+	if err != nil {
+		return err
 	}
 	momentsService := moments.New(database, momentOptions...)
 	operationsService, err := operations.New(database, uploaderService, envVar.MediaDir, envVar.TmpDir, envVar.MinDiskFree)
@@ -283,12 +284,6 @@ func run() error {
 	defer stopScheduler()
 	go processingService.Run(schedulerCtx)
 	go trashService.Run(schedulerCtx)
-	if aiEnabled {
-		go momentsService.RunScheduled(schedulerCtx, momentsInterval, func(err error) {
-			slog.Error("moment generation failed", "error", err)
-		})
-		slog.Info("moment generation scheduled", "interval", momentsInterval)
-	}
 	if nasImportService != nil {
 		go nasImportService.RunScheduled(schedulerCtx, autoAlbumSchedule, func(err error) {
 			slog.Error("NAS media import failed", "error", err)
