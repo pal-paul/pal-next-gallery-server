@@ -100,13 +100,17 @@ func TestImportArchiveDisablesMomentsAndRecreatesAlbums(t *testing.T) {
 	if len(repository.saved) != 2 {
 		t.Fatalf("saved %d media, want 2", len(repository.saved))
 	}
+	var capturedPhoto uploader.CompletedMedia
 	for _, media := range repository.saved {
 		if media.MomentsEnabled == nil || *media.MomentsEnabled {
 			t.Fatalf("moments were not disabled for %q", media.Filename)
 		}
+		if media.Filename == "photo.jpg" {
+			capturedPhoto = media
+		}
 	}
-	if repository.saved[0].CapturedAt == nil || repository.saved[0].CapturedAt.Unix() != 1609459200 {
-		t.Fatal("Takeout capture time was not preserved")
+	if capturedPhoto.CapturedAt == nil || capturedPhoto.CapturedAt.Unix() != 1609459200 {
+		t.Fatalf("Takeout capture time for photo.jpg was not preserved: got %v", capturedPhoto.CapturedAt)
 	}
 	if len(repository.albums["city break"]) != 1 {
 		t.Fatalf("unexpected album members: %#v", repository.albums)

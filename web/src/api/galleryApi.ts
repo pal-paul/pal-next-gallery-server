@@ -29,6 +29,8 @@ type AlbumMetadataJob = {
   error?: string
 }
 
+const albumMetadataJobs = new Map<GalleryID, string>()
+
 const normalizeAlbum = (album: ApiAlbum, mediaIds: GalleryID[] = []): Album => ({
   ...album,
   createdAt: album.createdAt.slice(0, 10),
@@ -73,14 +75,25 @@ export const galleryApi = {
     return request<void>(`/albums/${albumId}`, { method: 'PATCH', body: JSON.stringify({ title, description }) })
   },
   async suggestAlbumMetadata(albumId: GalleryID, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const path = `/albums/${albumId}/metadata-suggestion`
-    let job = await request<AlbumMetadataJob>(path, { method: 'POST', signal })
-    for (let attempt = 0; attempt < 300; attempt += 1) {
+    const outstandingJobId = albumMetadataJobs.get(albumId)
+    let job = outstandingJobId
+      ? await request<AlbumMetadataJob>(`${path}/${outstandingJobId}`, { signal })
+      : await request<AlbumMetadataJob>(path, { method: 'POST' })
+    albumMetadataJobs.set(albumId, job.id)
+    for (let attempt = 0; attempt <= 300; attempt += 1) {
+      signal?.throwIfAborted()
       if (job.status === 'completed') {
         if (!job.result) throw new Error('The completed suggestion has no result.')
+        albumMetadataJobs.delete(albumId)
         return job.result
       }
-      if (job.status === 'failed') throw new Error(job.error || 'Unable to generate album metadata.')
+      if (job.status === 'failed') {
+        albumMetadataJobs.delete(albumId)
+        throw new Error(job.error || 'Unable to generate album metadata.')
+      }
+      if (attempt === 300) break
       await new Promise((resolve) => setTimeout(resolve, 2000))
       signal?.throwIfAborted()
       job = await request<AlbumMetadataJob>(`${path}/${job.id}`, { signal })
