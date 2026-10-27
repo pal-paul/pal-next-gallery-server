@@ -397,12 +397,13 @@ Adding or removing Album media never calls Gemini.
 <!-- markdownlint-enable MD013 MD060 -->
 
 Completed image preprocessing inserts a durable description job. The separate
-`moments-worker` process describes each photo using Gemini, caches its structured
-description and its Gemini text embedding, and performs deterministic event matching
-using compatible descriptor-vector cosine similarity plus reliable capture time and
-GPS. Legacy or incompatible vectors fall back to descriptor tokens. At least five distinct matching
-photos create a draft; uncertain photos remain unassigned. Later matching photos
-join existing moments without regenerating their titles or descriptions.
+`moments-worker` process describes each photo using Gemini and caches its
+structured description and Gemini text embedding. Deterministic event matching
+uses compatible descriptor-vector cosine similarity, reliable capture time,
+and GPS. Legacy or incompatible vectors fall back to descriptor tokens. At
+least five distinct matching photos create a draft; uncertain photos remain
+unassigned. Later matching photos join existing moments without regenerating
+their titles or descriptions.
 
 `POST /moments/generate` returns HTTP `202 Accepted` with
 `{"created":0,"queued":N}` after enqueueing
@@ -424,6 +425,11 @@ restarts; failed attempts count, while cached-description retries do not. Event
 naming and descriptor embedding are separate text requests outside this image quota.
 The weekly moment scheduler and its interval setting have been removed. Upload
 preprocessing completion triggers work; there is no scheduled library-wide sweep.
+
+On enabled worker startup, eligible existing photos missing descriptions or
+current descriptor embeddings are queued without an age cutoff, including
+photos already assigned to moments. The daily quota gradually drains this
+backlog without renaming confirmed moments.
 
 Set `ENV_AI_FEATURE=NO` in both server and worker environments and recreate the
 services. Disabled
