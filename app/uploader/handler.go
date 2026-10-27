@@ -145,8 +145,18 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 	if !storageExceeded {
 		storageExceeded = quotaExceeded(stored+pending, u.Size, storageQuota)
 	}
-	if active >= s.maxActive || quotaExceeded(pending, u.Size, s.maxPendingSize) || storageExceeded {
-		context.JSON(http.StatusTooManyRequests, gin.H{"error": "upload quota exceeded"})
+	if storageExceeded {
+		context.JSON(http.StatusTooManyRequests, gin.H{"code": "upload_storage_quota_exceeded", "error": "Storage quota exceeded. Free storage or ask an administrator to increase your quota."})
+		return
+	}
+	if active >= s.maxActive {
+		context.Header("Retry-After", "5")
+		context.JSON(http.StatusTooManyRequests, gin.H{"code": "upload_active_limit", "error": "Too many unfinished uploads. Wait for other uploads to finish or cancel them."})
+		return
+	}
+	if quotaExceeded(pending, u.Size, s.maxPendingSize) {
+		context.Header("Retry-After", "5")
+		context.JSON(http.StatusTooManyRequests, gin.H{"code": "upload_pending_limit", "error": "Pending uploads exceed your upload allowance. Wait for other uploads to finish or cancel them."})
 		return
 	}
 	dir := filepath.Join(s.tmpDir, id)

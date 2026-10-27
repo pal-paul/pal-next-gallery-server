@@ -168,9 +168,10 @@ func TestCreateUploadEnforcesPerUserQuotas(t *testing.T) {
 	tests := []struct {
 		name    string
 		options []Option
+		code    string
 	}{
-		{name: "active sessions", options: []Option{WithMaxActiveUploads(1)}},
-		{name: "pending bytes", options: []Option{WithMaxPendingUploadSize(6)}},
+		{name: "active sessions", options: []Option{WithMaxActiveUploads(1)}, code: "upload_active_limit"},
+		{name: "pending bytes", options: []Option{WithMaxPendingUploadSize(6)}, code: "upload_pending_limit"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -181,6 +182,15 @@ func TestCreateUploadEnforcesPerUserQuotas(t *testing.T) {
 			response := performRequest(router, http.MethodPost, "/media/upload", bytes.NewBufferString(`{"filename":"second.mp4","size":4}`))
 			if response.Code != http.StatusTooManyRequests {
 				t.Fatalf("got %d, want %d: %s", response.Code, http.StatusTooManyRequests, response.Body.String())
+			}
+			var payload struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Code != test.code {
+				t.Fatalf("unexpected quota error: %s (%v)", response.Body.String(), err)
+			}
+			if response.Header().Get("Retry-After") != "5" {
+				t.Fatalf("temporary quota response has no retry delay: %v", response.Header())
 			}
 		})
 	}
@@ -196,6 +206,15 @@ func TestCreateUploadEnforcesTotalStorageQuota(t *testing.T) {
 	response := performRequest(router, http.MethodPost, "/media/upload", bytes.NewBufferString(`{"filename":"video.mp4","size":4}`))
 	if response.Code != http.StatusTooManyRequests {
 		t.Fatalf("got %d, want %d: %s", response.Code, http.StatusTooManyRequests, response.Body.String())
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Code != "upload_storage_quota_exceeded" {
+		t.Fatalf("unexpected storage quota error: %s (%v)", response.Body.String(), err)
+	}
+	if response.Header().Get("Retry-After") != "" {
+		t.Fatalf("storage quota must not request automatic retries: %v", response.Header())
 	}
 }
 

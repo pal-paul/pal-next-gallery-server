@@ -218,6 +218,14 @@ A regular user can preflight a checksum, create a durable batch, and upload
 each file in fixed-size parts. The processing status and thumbnail endpoints
 become useful after completion enqueues the media job.
 
+Upload creation returns `429` with `code` and `error` when a quota is reached.
+`upload_active_limit` and `upload_pending_limit` include `Retry-After` in
+seconds; clients may retry these temporary limits with a bounded delay.
+`upload_storage_quota_exceeded` requires freeing storage or increasing the
+quota, not automatic retries. Cancel unused sessions with
+`DELETE /media/upload/{id}`; cleanup must still run after canceling the upload
+task so abandoned sessions do not keep consuming the active-upload allowance.
+
 ```mermaid
 sequenceDiagram
   actor Client

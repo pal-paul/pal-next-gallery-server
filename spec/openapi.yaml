@@ -1181,6 +1181,20 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
+        "429":
+          description: Active-session, pending-byte, or storage quota exceeded. Only temporary limits include Retry-After; storage quota failures require freeing storage or changing the quota.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying a temporary active-session or pending-byte limit.
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, error]
+                properties:
+                  code: { type: string, enum: [upload_active_limit, upload_pending_limit, upload_storage_quota_exceeded] }
+                  error: { type: string }
         "500":
           $ref: "#/components/responses/InternalServerError"
   /media/upload/{id}:
