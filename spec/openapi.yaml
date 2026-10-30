@@ -60,18 +60,19 @@ info:
 
     ## Moments
 
-    Moments are separate from albums. Generation groups successfully processed,
-    unassigned photos from the previous seven days using capture time, visual
-    similarity, GPS, and optional Gemini semantic reconciliation. Generated and
-    manually created Moments begin as drafts. Groups require at least three
-    photos, while manual Moments require at least one. Deleting or declining a
+    Moments are separate from albums. Upload preprocessing completion queues a
+    photo for a separate worker that caches a Gemini description and descriptor-text
+    embedding. Deterministic event matching combines compatible text-vector cosine
+    similarity with reliable capture time and GPS, using a bounded neighborhood.
+    Generated and manually created Moments begin as drafts. Generated groups require
+    at least five distinct matching photos; manual Moments require at least one. Deleting or declining a
     draft removes only its Moment membership, making its photos eligible for a
     later generation run; source photos are never deleted.
 
-    Gemini is not called during upload. When AI is enabled, upload processing
-    stores a local CLIP embedding. Moment generation sends only selected visual
-    representatives without cached descriptions to Gemini Vision, then sends
-    structured descriptions to Gemini Text. User-triggered Moment and Album
+    Upload handlers never call Gemini. The separate moment worker describes and
+    embeds each eligible photo, reuses cached features on retry, and names a new
+    moment only on promotion. Later matches retain its title and description.
+    No local image-embedding service is required. User-triggered Moment and Album
     metadata suggestions randomly sample at most six member photos and reuse
     cached descriptions.
 
@@ -93,12 +94,17 @@ info:
     - `ENV_ISSUER` is displayed by authenticator applications.
     - `ENV_AUTO_ALBUM_RUN_AT` defaults to `02:00`; `ENV_AUTO_ALBUM_TIMEZONE`
       accepts an IANA timezone and defaults to the host's local timezone.
-    - `ENV_MOMENTS_INTERVAL` controls background moment generation and defaults
-      to `168h`.
-    - `ENV_AI_FEATURE` defaults to `YES`. Setting it to `NO` disables CLIP
-      embeddings, Gemini configuration, scheduled and manual AI generation, and
+    - Moment processing is upload-triggered; the weekly scheduler has been removed.
+    - `ENV_MOMENTS_DAILY_IMAGE_LIMIT` defaults to `100` image-description attempts
+      per UTC day across workers; zero pauses processing. Embedding and naming
+      text requests are separate from this image quota.
+    - `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001` with
+      768-dimensional descriptor-text vectors and compatible-model cosine retrieval.
+    - `ENV_AI_FEATURE` defaults to `YES`. Setting it to `NO` disables
+      Gemini worker inference, manual AI discovery, and
       AI metadata suggestions without disabling uploads, Albums, or manual
-      Moment management.
+      Moment management. Queued work is retained; recreate server and worker
+      after changing this setting.
 
     PostgreSQL stores users, sessions, challenges, completed-media metadata,
     sharing, albums, and preferences. Active upload chunks and their recovery
@@ -752,18 +758,19 @@ paths:
     post:
       tags: [Moments]
       operationId: generateMoments
-      summary: Generate moments from unassigned processed photos
+      summary: Queue unassigned processed photos for asynchronous moment generation
       responses:
-        "200":
-          description: Number of drafts created.
+        "202":
+          description: Photos queued for the separate worker. No inference runs in this request.
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: false
-                required: [created]
+                required: [created, queued]
                 properties:
                   created: { type: integer, minimum: 0 }
+                  queued: { type: integer, minimum: 0 }
         "403":
           $ref: "#/components/responses/Forbidden"
         "503":
@@ -823,19 +830,40 @@ paths:
     post:
       tags: [Gallery]
       operationId: suggestAlbumMetadata
-      summary: Suggest an Album title and description with Gemini
-      description: Randomly samples at most six Album photos, reuses cached image descriptions, and returns a suggestion without updating the Album. The user may edit and save the result normally.
+      summary: Queue an asynchronous Album metadata suggestion
+      description: Returns immediately after persisting a job. The separate moments worker samples at most six accessible Album photos and synthesizes metadata from cached descriptions. Missing descriptions leave the job pending without bypassing the daily image quota. The Album is not updated automatically. Repeated submissions reuse an active job.
       parameters:
         - $ref: "#/components/parameters/AlbumID"
       responses:
-        "200":
-          description: Suggested metadata for user review.
+        "202":
+          description: Durable suggestion job accepted. Poll the Location URL for its status and result.
+          headers:
+            Location:
+              description: Owner-scoped job status URL.
+              schema: { type: string }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/MetadataSuggestion" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+              schema: { $ref: "#/components/schemas/AlbumMetadataJob" }
         "404": { $ref: "#/components/responses/ResourceNotFound" }
         "503": { description: AI features are disabled or unavailable. }
+  /albums/{albumId}/metadata-suggestion/{jobID}:
+    get:
+      tags: [Gallery]
+      operationId: getAlbumMetadataSuggestion
+      summary: Get the status and result of an Album metadata suggestion
+      parameters:
+        - $ref: "#/components/parameters/AlbumID"
+        - name: jobID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Pending, running, completed, or failed job. Completed jobs include editable metadata; failed jobs include an error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlbumMetadataJob" }
+        "404": { $ref: "#/components/responses/ResourceNotFound" }
   /moments/{momentId}/media:
     post:
       tags: [Moments]
@@ -1153,6 +1181,20 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ForbiddenOrigin"
+        "429":
+          description: Active-session, pending-byte, or storage quota exceeded. Only temporary limits include Retry-After; storage quota failures require freeing storage or changing the quota.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying a temporary active-session or pending-byte limit.
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, error]
+                properties:
+                  code: { type: string, enum: [upload_active_limit, upload_pending_limit, upload_storage_quota_exceeded] }
+                  error: { type: string }
         "500":
           $ref: "#/components/responses/InternalServerError"
   /media/upload/{id}:
@@ -1256,6 +1298,12 @@ paths:
         record, and removes temporary chunks and active-session metadata. The
         returned lowercase SHA-256 is always computed by the server. Missing
         parts return `409`; size or checksum mismatches return `400`.
+
+        Storage quota is rechecked atomically with persistence, including other
+        unfinished upload reservations and concurrently imported media. The
+        upload's own reservation is consumed without double-counting its size.
+        A quota rejection returns `429` without Retry-After and retains the
+        resumable chunks and reservation until cancellation or expiry.
       parameters:
         - $ref: "#/components/parameters/UploadID"
       responses:
@@ -1275,6 +1323,19 @@ paths:
           $ref: "#/components/responses/UploadNotFound"
         "409":
           $ref: "#/components/responses/UploadConflict"
+        "429":
+          description: Storage quota exceeded. Free storage or increase the quota; do not retry automatically.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, error]
+                properties:
+                  code:
+                    type: string
+                    enum: [upload_storage_quota_exceeded]
+                  error:
+                    type: string
         "500":
           $ref: "#/components/responses/InternalServerError"
   /auth/recovery:
@@ -1692,6 +1753,60 @@ paths:
                 $ref: "#/components/schemas/ImportResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+  /media/import/google-takeout:
+    post:
+      tags: [Transfer]
+      operationId: importGoogleTakeout
+      summary: Import media and albums from a Google Takeout ZIP
+      description: |
+        Accepts one ZIP per request. Submit split Takeout exports sequentially;
+        owner-scoped SHA-256 deduplication and stable album mappings make retries
+        idempotent. `momentsEnabled` defaults to true. Duplicate media retains
+        its existing Moments setting.
+        Archives stream into size-bounded files in the configured temporary
+        directory and are removed after success or failure. Archive staging
+        enforces the configured free-disk reserve.
+        Extraction checks the expanded entry size against the configured minimum
+        free-disk reserve and rechecks during writes. A low-space failure removes
+        the partial file; earlier files imported from the archive remain stored.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [archive]
+              properties:
+                archive:
+                  type: string
+                  format: binary
+                  description: A Google Takeout ZIP containing a Google Photos directory.
+                momentsEnabled:
+                  type: boolean
+                  default: true
+                  description: Allow newly imported media to participate in automatic Moment generation. Manual Moment creation remains available when false.
+      responses:
+        "201":
+          description: Archive imported and its media queued for normal processing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TakeoutImportResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          description: The archive, expanded content, or resulting owner storage exceeds its configured limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Insufficient disk space to stage the archive or extract media without consuming the configured free-space reserve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     sessionCookie:
@@ -2043,6 +2158,18 @@ components:
         title: { type: string }
         description: { type: string }
         confidence: { type: number, minimum: 0, maximum: 1 }
+    AlbumMetadataJob:
+      type: object
+      additionalProperties: false
+      required: [id, albumId, status]
+      properties:
+        id: { type: string, format: uuid }
+        albumId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        result: { $ref: "#/components/schemas/MetadataSuggestion" }
+        error:
+          type: string
+          description: A safe failure message or an explanation of what a pending job is waiting for.
     MomentMediaInput:
       type: object
       additionalProperties: false
@@ -2596,6 +2723,16 @@ components:
         sessionId: { type: string, format: uuid }
         status: { type: string, const: completed }
         importedAlbums: { type: integer, minimum: 0 }
+    TakeoutImportResult:
+      type: object
+      additionalProperties: false
+      required: [imported, duplicates, skipped, albums, momentsEnabled]
+      properties:
+        imported: { type: integer, minimum: 0 }
+        duplicates: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        albums: { type: integer, minimum: 0 }
+        momentsEnabled: { type: boolean }
     ErrorResponse:
       type: object
       additionalProperties: false

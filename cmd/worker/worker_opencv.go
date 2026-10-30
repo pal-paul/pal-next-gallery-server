@@ -182,29 +182,9 @@ func similarity(left, right imageFeatures) float64 {
 		histogramIntersection += math.Min(left.histogram[index], right.histogram[index])
 	}
 	hashSimilarity := 1 - float64(bits.OnesCount64(left.hash^right.hash))/64
-	visualSimilarity := histogramIntersection
-	if embeddingSimilarity, ok := cosineSimilarity(left.candidate.Embedding, right.candidate.Embedding); ok {
-		visualSimilarity = embeddingSimilarity
-	}
 	timeSimilarity := proximity(left.candidate.CapturedAt, right.candidate.CapturedAt, 6*time.Hour)
 	locationSimilarity := locationProximity(left.candidate, right.candidate)
-	return 0.55*visualSimilarity + 0.20*hashSimilarity + 0.15*timeSimilarity + 0.10*locationSimilarity
-}
-
-func cosineSimilarity(left, right []float64) (float64, bool) {
-	if len(left) == 0 || len(left) != len(right) {
-		return 0, false
-	}
-	var dot, leftMagnitude, rightMagnitude float64
-	for index := range left {
-		dot += left[index] * right[index]
-		leftMagnitude += left[index] * left[index]
-		rightMagnitude += right[index] * right[index]
-	}
-	if leftMagnitude == 0 || rightMagnitude == 0 {
-		return 0, false
-	}
-	return max(0, min(1, dot/math.Sqrt(leftMagnitude*rightMagnitude))), true
+	return 0.55*histogramIntersection + 0.20*hashSimilarity + 0.15*timeSimilarity + 0.10*locationSimilarity
 }
 
 func proximity(left, right time.Time, limit time.Duration) float64 {

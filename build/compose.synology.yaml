@@ -27,30 +27,6 @@ services:
         max-file: "5"
     restart: unless-stopped
 
-  embedding-api:
-    profiles: ["ai"]
-    image: ghcr.io/pal-paul/pal-next-gallery-server-embedding:1.4.0
-    environment:
-      EMBEDDING_MODEL: openai/clip-vit-base-patch32
-    volumes:
-      - type: bind
-        source: /volume1/docker/next-gallery-server/models
-        target: /models/huggingface
-        bind:
-          create_host_path: true
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      start_period: 5m
-      retries: 5
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "5"
-    restart: unless-stopped
-
   server:
     image: ghcr.io/pal-paul/pal-next-gallery-server:1.4.0
     environment:
@@ -75,14 +51,10 @@ services:
       ENV_AUTO_ALBUM_RUN_AT: "02:00"
       ENV_AUTO_ALBUM_TIMEZONE: Europe/Stockholm
       ENV_AI_FEATURE: "NO"
-      ENV_MOMENTS_INTERVAL: 168h
-      ENV_MOMENTS_CV_WORKER: /app/worker
       ENV_MOMENTS_GEMINI_URL: https://generativelanguage.googleapis.com/v1beta
       ENV_MOMENTS_GEMINI_API_KEY: "<change-me>"
       ENV_MOMENTS_GEMINI_MODEL: gemini-3.5-flash-lite
       ENV_MOMENTS_GEMINI_TEXT_MODEL: gemini-3.5-flash-lite
-      ENV_MOMENTS_EMBEDDING_URL: http://embedding-api:8000/embed
-      ENV_MOMENTS_EMBEDDING_MODEL: openai/clip-vit-base-patch32
       NAS_IMPORT_PATH: /data/import
       ENV_MEDIA_DIR: /data/gallery
       ENV_TMP_DIR: /data/tmp
@@ -121,6 +93,35 @@ services:
     networks:
       - default
       - tunnel
+    restart: unless-stopped
+
+  moments-worker:
+    image: ghcr.io/pal-paul/pal-next-gallery-server:1.4.0
+    entrypoint: ["/app/moments-worker"]
+    environment:
+      ENV_DATABASE_URL: "postgres://<change-me>:<change-me>@postgres:5432/uploader?sslmode=disable"
+      ENV_MEDIA_DIR: /data/gallery
+      ENV_AI_FEATURE: "NO"
+      ENV_MOMENTS_DAILY_IMAGE_LIMIT: "100"
+      ENV_MOMENTS_GEMINI_EMBEDDING_MODEL: gemini-embedding-001
+      ENV_MOMENTS_GEMINI_API_KEY: "<change-me>"
+      ENV_MOMENTS_GEMINI_MODEL: gemini-3.5-flash-lite
+      ENV_MOMENTS_GEMINI_TEXT_MODEL: gemini-3.5-flash-lite
+    volumes:
+      - type: bind
+        source: /volume1/media/gallery
+        target: /data/gallery
+        read_only: true
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
     restart: unless-stopped
 
   cloudflared:

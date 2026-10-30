@@ -45,9 +45,10 @@ $(LOCAL_GOLANGCI_LINT):
 
 build: build-go build-web ## Build the backend and frontend
 
-build-go: ## Build the Go server
+build-go: ## Build the Go server and moment queue worker
 	@mkdir -p $(dir $(BINARY))
 	$(GO) build -trimpath -o $(BINARY) ./cmd/server
+	$(GO) build -trimpath -o bin/moments-worker ./cmd/moments-worker
 
 web-install: ## Install locked frontend dependencies
 	cd web && $(NPM) ci

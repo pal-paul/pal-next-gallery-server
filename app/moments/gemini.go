@@ -18,14 +18,17 @@ import (
 
 const defaultGeminiEndpoint = "https://generativelanguage.googleapis.com/v1beta"
 const geminiRequestTimeout = 30 * time.Second
+const defaultGeminiEmbeddingModel = "gemini-embedding-001"
+const descriptorEmbeddingDimensions = 768
 
 type GeminiEnricher struct {
-	endpoint   *url.URL
-	apiKey     string
-	model      string
-	textModel  string
-	mediaDir   string
-	httpClient *http.Client
+	embeddingModel string
+	endpoint       *url.URL
+	apiKey         string
+	model          string
+	textModel      string
+	mediaDir       string
+	httpClient     *http.Client
 }
 
 func NewGeminiPipeline(endpoint, apiKey, visionModel, textModel, mediaDir string) (*GeminiEnricher, error) {
@@ -46,7 +49,8 @@ func NewGeminiPipeline(endpoint, apiKey, visionModel, textModel, mediaDir string
 		return nil, fmt.Errorf("ENV_MOMENTS_GEMINI_TEXT_MODEL is required")
 	}
 	return &GeminiEnricher{
-		endpoint: parsed, apiKey: strings.TrimSpace(apiKey), model: strings.TrimSpace(visionModel),
+		embeddingModel: defaultGeminiEmbeddingModel,
+		endpoint:       parsed, apiKey: strings.TrimSpace(apiKey), model: strings.TrimSpace(visionModel),
 		textModel: strings.TrimSpace(textModel), mediaDir: filepath.Clean(mediaDir),
 		httpClient: &http.Client{Timeout: geminiRequestTimeout},
 	}, nil
@@ -61,7 +65,7 @@ func (enricher *GeminiEnricher) Describe(ctx context.Context, candidate Candidat
 	if err != nil {
 		return ImageDescription{}, fmt.Errorf("read representative image: %w", err)
 	}
-	prompt := `Describe this photo using visible evidence only. Return JSON only with people (array), activities (array), location_type, objects (array), scene, weather, and description. Use empty arrays or empty strings when a detail is not visible. Do not identify people or invent a specific place, date, activity, or weather condition.`
+	prompt := `Describe this photo using visible evidence only. Return JSON only with people (array), keywords (array), activities (array), location_type, objects (array), scene, weather, and description. Use empty arrays or empty strings when a detail is not visible. Do not identify people or invent a specific place, date, activity, or weather condition.`
 	content, err := enricher.generate(ctx, enricher.model, prompt, &geminiImage{
 		MIMEType: imageMIMEType(imagePath, image),
 		Data:     base64.StdEncoding.EncodeToString(image),
@@ -96,6 +100,64 @@ func (enricher *GeminiEnricher) Synthesize(ctx context.Context, moment Moment, d
 		return Metadata{}, err
 	}
 	return decodeMetadata(content)
+}
+
+func (enricher *GeminiEnricher) SetTextEmbeddingModel(model string) error {
+	model = strings.TrimPrefix(strings.TrimSpace(model), "models/")
+	if model == "" || strings.ContainsAny(model, "/:?#") {
+		return fmt.Errorf("ENV_MOMENTS_GEMINI_EMBEDDING_MODEL must be a model name")
+	}
+	enricher.embeddingModel = model
+	return nil
+}
+
+func (enricher *GeminiEnricher) TextEmbeddingModel() string {
+	return fmt.Sprintf("%s:SEMANTIC_SIMILARITY:%d", enricher.embeddingModel, descriptorEmbeddingDimensions)
+}
+
+func (enricher *GeminiEnricher) EmbedDescription(ctx context.Context, description ImageDescription) ([]float64, error) {
+	text := descriptorText(description)
+	if text == "" {
+		return nil, fmt.Errorf("cannot embed an empty descriptor")
+	}
+	payload := map[string]any{
+		"model":    "models/" + enricher.embeddingModel,
+		"content":  map[string]any{"parts": []map[string]string{{"text": text}}},
+		"taskType": "SEMANTIC_SIMILARITY", "outputDimensionality": descriptorEmbeddingDimensions,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	requestURL := *enricher.endpoint
+	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/models/" + url.PathEscape(enricher.embeddingModel) + ":embedContent"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("x-goog-api-key", enricher.apiKey)
+	response, err := enricher.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("request descriptor embedding: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, fmt.Errorf("descriptor embedding returned %s: %s", response.Status, strings.TrimSpace(string(message)))
+	}
+	var result struct {
+		Embedding struct {
+			Values []float64 `json:"values"`
+		} `json:"embedding"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode descriptor embedding: %w", err)
+	}
+	if _, valid := TextCosine(result.Embedding.Values, result.Embedding.Values); !valid || len(result.Embedding.Values) != descriptorEmbeddingDimensions {
+		return nil, fmt.Errorf("invalid descriptor embedding")
+	}
+	return result.Embedding.Values, nil
 }
 
 func (enricher *GeminiEnricher) MergeClusters(ctx context.Context, clusters [][]ImageDescription) ([][]int, error) {
@@ -193,11 +255,11 @@ func imageDescriptionSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"people": stringArray, "activities": stringArray, "location_type": map[string]any{"type": "string"},
+			"people": stringArray, "keywords": stringArray, "activities": stringArray, "location_type": map[string]any{"type": "string"},
 			"objects": stringArray, "scene": map[string]any{"type": "string"}, "weather": map[string]any{"type": "string"},
 			"description": map[string]any{"type": "string"},
 		},
-		"required": []string{"people", "activities", "location_type", "objects", "scene", "weather", "description"},
+		"required": []string{"people", "keywords", "activities", "location_type", "objects", "scene", "weather", "description"},
 	}
 }
 

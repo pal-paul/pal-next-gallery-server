@@ -218,6 +218,35 @@ A regular user can preflight a checksum, create a durable batch, and upload
 each file in fixed-size parts. The processing status and thumbnail endpoints
 become useful after completion enqueues the media job.
 
+Upload creation returns `429` with `code` and `error` when a quota is reached.
+`upload_active_limit` and `upload_pending_limit` include `Retry-After` in
+seconds; clients may retry these temporary limits with a bounded delay.
+`upload_storage_quota_exceeded` requires freeing storage or increasing the
+quota, not automatic retries. Cancel unused sessions with
+`DELETE /media/upload/{id}`; cleanup must still run after canceling the upload
+task so abandoned sessions do not keep consuming the active-upload allowance.
+
+Stored media and unfinished uploads share atomic, per-owner quota accounting
+with Google Takeout imports. Upload reservations survive restarts and are
+released on completion, duplicate rejection, cancellation, or expiry. Completion
+rechecks the current quota and can also return `429` with
+`upload_storage_quota_exceeded`, for example after an administrator lowers the
+quota. Its chunks remain resumable until the session is canceled or expires.
+Takeout imports return `413` when atomic persistence rejects the quota; rejected
+media files are removed.
+
+Takeout archives stream into size-bounded temporary files in the configured
+temporary directory, rather than multipart spill files in the OS temporary
+directory. Staged archives are removed after success or failure. Archive staging
+uses the same free-space guard as media extraction.
+
+Takeout extraction also checks each entry's expanded size against
+`ENV_MIN_DISK_FREE_BYTES` before creating its media file. Extraction, upload
+chunks, and upload assembly share bounded, free-space-checked writes within the
+server process. Low space returns `503` and removes the incomplete output;
+earlier imported files remain stored, and upload chunks remain resumable.
+Other processes writing to the same filesystem are not coordinated by this guard.
+
 ```mermaid
 sequenceDiagram
   actor Client
@@ -254,7 +283,7 @@ flowchart TD
   A --> AO["Jobs and operations<br/>/admin/processing-jobs*, /admin/operations/*"]
   R --> G["Gallery and albums<br/>/media, /albums/*, /storage"]
   R --> P["Public link management<br/>/media/public-links*"]
-  R --> T["Metadata transfer<br/>/media/export, /media/import"]
+  R --> T["Import and transfer<br/>/media/export, /media/import<br/>/media/import/google-takeout"]
   P --> X["Unauthenticated recipient<br/>/public/{token}<br/>/public/{token}/download"]
 ```
 
@@ -299,11 +328,38 @@ for complete request and response schemas.
 | `GET`    | `/public/{token}/download`              | Public             | Download linked media or an album ZIP.                           |
 | `GET`    | `/media/export`                         | Regular user       | Export versioned media and album metadata.                       |
 | `POST`   | `/media/import`                         | Regular user       | Import manual albums for currently owned media.                  |
+| `POST`   | `/media/import/google-takeout`          | Regular user       | Import media and albums from one Google Takeout ZIP.             |
 
 `GET /media` supports `search`, `kind=photo|video`,
 `sort=newest|oldest|title`, `trash=true`, capture-time ranges, and GPS radius
 search. A returned item's `shared` field is `true` when the current user is a
 recipient rather than its owner.
+
+Google Takeout import accepts `multipart/form-data` with an `archive` ZIP and
+an optional `momentsEnabled` boolean, which defaults to `true`. Submit each
+ZIP from a split Takeout export separately. Imports preserve sidecar capture
+times, deduplicate by owner-scoped SHA-256, enqueue normal media processing,
+and idempotently recreate Google album folders as manual albums. Calendar
+folders such as `Photos from 2025` are not recreated because automatic albums
+already cover that organization. Retried or repeated media is linked to albums
+but retains its existing Moments setting. When explicitly disabled, media is
+excluded only from automatic Moment generation; users can still manually create a
+Moment or add the imported media to an existing Moment.
+
+The command-line utility imports either one ZIP or every ZIP in a directory and
+records completed archives by SHA-256, allowing a later run to continue with the
+first unfinished archive:
+
+```bash
+./scripts/import-google-takeout.sh \
+  --server https://gallery.example.com \
+  /path/to/google-takeout
+```
+
+It prompts for password and TOTP without storing them. The checkpoint defaults
+to `.pal-takeout-import.state` beside a directory input. Resumption is at ZIP
+boundaries; an interrupted ZIP restarts because the import endpoint does not
+support byte-range upload sessions.
 
 ### Albums
 
@@ -318,7 +374,8 @@ recipient rather than its owner.
 | `POST`   | `/albums/{albumId}/media`               | Add owned or shared media.                               |
 | `DELETE` | `/albums/{albumId}/media/{id}`          | Remove media from the album.                             |
 | `PATCH`  | `/albums/{albumId}/cover`               | Set an accessible album member as cover.                 |
-| `POST`   | `/albums/{albumId}/metadata-suggestion` | Suggest editable metadata from up to six sampled photos. |
+| `POST`   | `/albums/{albumId}/metadata-suggestion` | Accept an asynchronous metadata job with HTTP 202. |
+| `GET`    | `/albums/{albumId}/metadata-suggestion/{jobID}` | Poll the owner's suggestion job and result. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -349,7 +406,7 @@ Adding or removing Album media never calls Gemini.
 | -------- | ----------------------------------------- | -------------------------------------------------------- |
 | `GET`    | `/moments`                                | List the current user's moments.                         |
 | `POST`   | `/moments`                                | Create a user-edited manual draft.                       |
-| `POST`   | `/moments/generate`                       | Group currently unassigned processed photos.             |
+| `POST`   | `/moments/generate`                       | Queue unassigned processed photos; no synchronous inference. |
 | `GET`    | `/moments/{momentId}`                     | Get a moment and its photos.                             |
 | `PATCH`  | `/moments/{momentId}`                     | Edit metadata and lifecycle.                             |
 | `DELETE` | `/moments/{momentId}`                     | Delete the moment, not its photos.                       |
@@ -360,19 +417,20 @@ Adding or removing Album media never calls Gemini.
 
 <!-- markdownlint-enable MD013 MD060 -->
 
-Initial generation considers successfully processed photos captured within the
-previous seven days, falling back to upload time. The OpenCV worker combines
-capture time, CLIP similarity, perceptual hashes, and GPS; time-only grouping
-with a 30-minute gap is the fallback. Gemini describes selected visual
-representatives only when they have no cached description, semantically
-reconciles visual clusters, and generates title, description, and confidence.
-Groups must contain at least three photos and become drafts only when confidence
-is at least `0.65` and the description is non-empty.
+Completed image preprocessing inserts a durable description job. The separate
+`moments-worker` process describes each photo using Gemini and caches its
+structured description and Gemini text embedding. Deterministic event matching
+uses compatible descriptor-vector cosine similarity, reliable capture time,
+and GPS. Legacy or incompatible vectors fall back to descriptor tokens. At
+least five distinct matching photos create a draft; uncertain photos remain
+unassigned. Later matching photos join existing moments without regenerating
+their titles or descriptions.
 
-Semantic reconciliation uses `location_type`, visual evidence, capture time,
-and GPS. Its deterministic context pass distinguishes `public_venue`,
-`outdoor_activity`, `home_or_private`, `event_or_celebration`, `travel`, and
-`unknown`; unknown evidence is preserved rather than forced into a venue type.
+`POST /moments/generate` returns HTTP `202 Accepted` with
+`{"created":0,"queued":N}` after enqueueing
+eligible processed images for the authenticated owner. It does not impose a
+seven-day capture-date cutoff or wait for model calls. The compatibility field
+`created` is always zero. The HTTP handler never performs generation inline.
 
 Manual Moments require at least one photo and always start as user-edited
 drafts. Drafts can be edited, have photos added or removed, and be published by
@@ -382,21 +440,42 @@ future generation. Deleting any Moment never deletes source media. Already
 assigned photos are skipped on later runs, and the database prevents a photo
 from belonging to multiple Moments for the same owner.
 
-Background generation runs every 168 hours by default. Set
-`ENV_MOMENTS_INTERVAL` to another positive Go duration such as `24h` or `336h`.
-Set `ENV_AI_FEATURE=NO` to disable CLIP embeddings, Gemini providers, scheduled
-and manual AI generation, and AI metadata suggestions. Uploads, manual Moments,
-and Album management continue to work. With AI enabled, a Gemini API key is
-still required for generation and suggestions. Go defaults the vision and text
-models to `gemini-3.5-flash-lite`. Operators can override both with
-`ENV_MOMENTS_GEMINI_MODEL` and `ENV_MOMENTS_GEMINI_TEXT_MODEL`.
+`ENV_MOMENTS_DAILY_IMAGE_LIMIT` defaults to `100` image-description attempts per
+UTC day shared across workers. Zero pauses processing. Quota reservations survive
+restarts; failed attempts count, while cached-description retries do not. Event
+naming and descriptor embedding are separate text requests outside this image quota.
+The weekly moment scheduler and its interval setting have been removed. Upload
+preprocessing completion triggers work; there is no scheduled library-wide sweep.
 
-Gemini is not called when a photo is uploaded or merely added to a Moment or
-Album. Upload processing sends the thumbnail to the private CLIP service once
-to persist an embedding. A user-triggered metadata suggestion randomly samples
-at most six member photos, reuses stored image descriptions, calls Gemini Vision
-only for cache misses, then makes one Gemini Text request. The response is a
-suggestion; it does not update the collection until the user saves it.
+On enabled worker startup, eligible existing photos missing descriptions or
+current descriptor embeddings are queued without an age cutoff, including
+photos already assigned to moments. The daily quota gradually drains this
+backlog without renaming confirmed moments.
+
+Set `ENV_AI_FEATURE=NO` in both server and worker environments and recreate the
+services. Disabled
+workers make no Gemini calls and retain the queue. Uploads, manual Moments, and
+Album management continue to work. Both Gemini models default to
+`gemini-3.5-flash-lite` and remain independently configurable.
+`ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` defaults to `gemini-embedding-001`, using
+768-dimensional descriptor-text vectors. Embedding failures retain the cached
+description for retry without another vision call.
+
+Gemini is not called by upload handlers or manual membership changes. Album
+metadata suggestions return HTTP `202 Accepted` with `id`, `albumId`, and `status`,
+plus a `Location` header pointing to the owner-scoped polling URL. The durable job
+survives restarts, reuses active submissions, and is processed by `moments-worker`.
+Poll for `pending`, `running`, `completed` (with `result`), or `failed` (with
+`error`). Completed results remain available and never overwrite Album metadata.
+The web dialog polls in the background and stops polling when closed.
+
+Album jobs wait for missing cached descriptions rather than calling vision
+outside the daily quota. Photos excluded from moment processing need descriptions
+already cached; otherwise their suggestion remains pending. Text-provider errors
+produce failed jobs, and a new POST can retry. Expired worker leases are reclaimed.
+The separate Moment metadata-suggestion endpoint remains synchronous and reports
+an error for missing cached descriptions. Both kinds of suggestions require a
+normal user save to update the collection.
 
 Create or update an album:
 

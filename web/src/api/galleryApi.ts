@@ -22,6 +22,14 @@ type ApiMedia = {
 }
 type ApiAlbum = Omit<Album, 'createdAt' | 'mediaIds'> & { createdAt: string; media?: ApiMedia[] }
 type ApiStorage = Pick<StorageStats, 'totalBytes' | 'photoBytes' | 'videoBytes' | 'photoCount' | 'videoCount'>
+type AlbumMetadataJob = {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  result?: MetadataSuggestion
+  error?: string
+}
+
+const albumMetadataJobs = new Map<GalleryID, string>()
 
 const normalizeAlbum = (album: ApiAlbum, mediaIds: GalleryID[] = []): Album => ({
   ...album,
@@ -66,8 +74,31 @@ export const galleryApi = {
   updateAlbum(albumId: GalleryID, title: string, description: string) {
     return request<void>(`/albums/${albumId}`, { method: 'PATCH', body: JSON.stringify({ title, description }) })
   },
-  suggestAlbumMetadata(albumId: GalleryID) {
-    return request<MetadataSuggestion>(`/albums/${albumId}/metadata-suggestion`, { method: 'POST' })
+  async suggestAlbumMetadata(albumId: GalleryID, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const path = `/albums/${albumId}/metadata-suggestion`
+    const outstandingJobId = albumMetadataJobs.get(albumId)
+    let job = outstandingJobId
+      ? await request<AlbumMetadataJob>(`${path}/${outstandingJobId}`, { signal })
+      : await request<AlbumMetadataJob>(path, { method: 'POST' })
+    albumMetadataJobs.set(albumId, job.id)
+    for (let attempt = 0; attempt <= 300; attempt += 1) {
+      signal?.throwIfAborted()
+      if (job.status === 'completed') {
+        if (!job.result) throw new Error('The completed suggestion has no result.')
+        albumMetadataJobs.delete(albumId)
+        return job.result
+      }
+      if (job.status === 'failed') {
+        albumMetadataJobs.delete(albumId)
+        throw new Error(job.error || 'Unable to generate album metadata.')
+      }
+      if (attempt === 300) break
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      signal?.throwIfAborted()
+      job = await request<AlbumMetadataJob>(`${path}/${job.id}`, { signal })
+    }
+    throw new Error('The suggestion is still processing. Try again later to retrieve it.')
   },
   reorderAlbums(albumIds: GalleryID[]) {
     return request<void>('/albums/order', { method: 'PATCH', body: JSON.stringify({ albumIds }) })

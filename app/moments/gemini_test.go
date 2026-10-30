@@ -103,6 +103,59 @@ func TestGeminiPipelineRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestGeminiEmbedsDescriptorTextOnly(t *testing.T) {
+	for _, scenario := range []string{"success", "zero vector", "wrong dimensions", "HTTP failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/models/gemini-embedding-001:embedContent" || request.Header.Get("x-goog-api-key") != "key" {
+					t.Errorf("unexpected embedding request: %s", request.URL.Path)
+				}
+				var payload struct {
+					Model                string `json:"model"`
+					TaskType             string `json:"taskType"`
+					OutputDimensionality int    `json:"outputDimensionality"`
+					Content              struct {
+						Parts []map[string]string `json:"parts"`
+					} `json:"content"`
+				}
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload.Model != "models/gemini-embedding-001" || payload.TaskType != "SEMANTIC_SIMILARITY" || payload.OutputDimensionality != 768 ||
+					len(payload.Content.Parts) != 1 || payload.Content.Parts[0]["text"] != "Ocean outing beach boats sailing" || len(payload.Content.Parts[0]) != 1 {
+					t.Errorf("not a descriptor-only embedding request: %+v", payload)
+				}
+				if scenario == "HTTP failure" {
+					writer.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				values := make([]float64, 768)
+				if scenario != "zero vector" {
+					values[0] = 1
+				}
+				if scenario == "wrong dimensions" {
+					values = values[:2]
+				}
+				_ = json.NewEncoder(writer).Encode(map[string]any{"embedding": map[string]any{"values": values}})
+			}))
+			defer server.Close()
+			pipeline, err := NewGeminiPipeline(server.URL, "key", "vision", "text", t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pipeline.httpClient = server.Client()
+			embedding, err := pipeline.EmbedDescription(context.Background(), ImageDescription{Description: "Ocean outing", Keywords: []string{"beach"}, Objects: []string{"boats"}, Activities: []string{"sailing"}})
+			if scenario == "success" {
+				if err != nil || len(embedding) != 768 || pipeline.TextEmbeddingModel() != "gemini-embedding-001:SEMANTIC_SIMILARITY:768" {
+					t.Fatalf("embedding = %v, %v", embedding, err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid embedding response succeeded")
+			}
+		})
+	}
+}
+
 func TestClusterMergePromptTreatsVisualClustersAsEventFragments(t *testing.T) {
 	prompt := clusterMergePrompt(`[[{"scene":"atrium"}],[{"scene":"exhibit"}],[{"scene":"lantern detail"}]]`)
 

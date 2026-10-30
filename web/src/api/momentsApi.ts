@@ -1,7 +1,7 @@
 import type { Moment } from '../types/gallery'
 import { request, resolveApiUrl } from './apiClient'
 
-type GenerateResult = { created: number }
+type GenerateResult = { created: number; queued: number }
 export type MetadataSuggestion = { title: string; description: string; confidence: number }
 
 const normalizeMoment = (moment: Moment): Moment => ({

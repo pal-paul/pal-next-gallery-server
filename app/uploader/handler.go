@@ -115,21 +115,6 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 	}
 	s.uploadMux.Lock()
 	defer s.uploadMux.Unlock()
-	stored := int64(0)
-	storageQuota := s.maxStorageSize
-	if s.mediaStore != nil {
-		stored, err = s.mediaStore.OwnerStorageBytes(context.Request.Context(), identity.ID)
-		if err != nil {
-			internalError(context, fmt.Errorf("read owner storage usage: %w", err))
-			return
-		}
-		if quota, configured, quotaErr := s.mediaStore.OwnerStorageQuota(context.Request.Context(), identity.ID); quotaErr != nil {
-			internalError(context, fmt.Errorf("read owner storage quota: %w", quotaErr))
-			return
-		} else if configured {
-			storageQuota = quota
-		}
-	}
 	active, pending := 0, int64(0)
 	for _, existing := range s.uploads {
 		if existing.upload.OwnerID == identity.ID && !existing.deleted {
@@ -141,12 +126,18 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 			}
 		}
 	}
-	storageExceeded := quotaExceeded(stored, pending, storageQuota)
-	if !storageExceeded {
-		storageExceeded = quotaExceeded(stored+pending, u.Size, storageQuota)
+	if s.mediaStore == nil && quotaExceeded(pending, u.Size, s.maxStorageSize) {
+		storageQuotaError(context)
+		return
 	}
-	if active >= s.maxActive || quotaExceeded(pending, u.Size, s.maxPendingSize) || storageExceeded {
-		context.JSON(http.StatusTooManyRequests, gin.H{"error": "upload quota exceeded"})
+	if active >= s.maxActive {
+		context.Header("Retry-After", "5")
+		context.JSON(http.StatusTooManyRequests, gin.H{"code": "upload_active_limit", "error": "Too many unfinished uploads. Wait for other uploads to finish or cancel them."})
+		return
+	}
+	if quotaExceeded(pending, u.Size, s.maxPendingSize) {
+		context.Header("Retry-After", "5")
+		context.JSON(http.StatusTooManyRequests, gin.H{"code": "upload_pending_limit", "error": "Pending uploads exceed your upload allowance. Wait for other uploads to finish or cancel them."})
 		return
 	}
 	dir := filepath.Join(s.tmpDir, id)
@@ -158,6 +149,20 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 		_ = os.RemoveAll(dir)
 		internalError(context, fmt.Errorf("write upload metadata: %w", err))
 		return
+	}
+	if s.mediaStore != nil {
+		if err := s.mediaStore.ReserveUploadStorage(context.Request.Context(), *u, s.maxStorageSize); err != nil {
+			if removeErr := s.removeUpload(context.Request.Context(), *u); removeErr != nil {
+				s.uploads[id] = &uploadSession{upload: *u}
+				_ = context.Error(fmt.Errorf("clean up rejected upload: %w", removeErr))
+			}
+			if errors.Is(err, ErrStorageQuota) {
+				storageQuotaError(context)
+			} else {
+				internalError(context, fmt.Errorf("reserve upload storage: %w", err))
+			}
+			return
+		}
 	}
 	s.uploads[id] = &uploadSession{upload: *u}
 	context.JSON(http.StatusCreated, gin.H{"id": id, "chunk_size": chunkSize, "chunks": chunks})
@@ -196,13 +201,18 @@ func (s *service) HandleUploadPart(context *gin.Context) {
 		return
 	}
 	tmp := f.Name()
-	n, copyErr := io.Copy(f, io.LimitReader(context.Request.Body, expected+1))
+	n, copyErr := CopyWithDiskReserve(context.Request.Context(), f, io.LimitReader(context.Request.Body, expected+1),
+		s.tmpDir, s.minDiskFree, s.diskFree)
 	if copyErr == nil && n == expected {
 		copyErr = f.Sync()
 	}
 	closeErr := f.Close()
 	if copyErr != nil || closeErr != nil {
 		_ = os.Remove(tmp)
+		if errors.Is(copyErr, ErrInsufficientDiskSpace) {
+			context.JSON(http.StatusServiceUnavailable, gin.H{"error": ErrInsufficientDiskSpace.Error()})
+			return
+		}
 		internalError(context, fmt.Errorf("write chunk: %w", firstError(copyErr, closeErr)))
 		return
 	}
@@ -276,11 +286,15 @@ func (s *service) HandleCompleteUpload(context *gin.Context) {
 			context.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("missing part %d", i)})
 			return
 		}
-		n, err := io.Copy(writer, part)
+		n, err := CopyWithDiskReserve(context.Request.Context(), writer, part, s.mediaDir, s.minDiskFree, s.diskFree)
 		_ = part.Close()
 		if err != nil {
 			_ = out.Close()
 			_ = os.Remove(tmp)
+			if errors.Is(err, ErrInsufficientDiskSpace) {
+				context.JSON(http.StatusServiceUnavailable, gin.H{"error": ErrInsufficientDiskSpace.Error()})
+				return
+			}
 			internalError(context, fmt.Errorf("copy part %d: %w", i, err))
 			return
 		}
@@ -315,23 +329,24 @@ func (s *service) HandleCompleteUpload(context *gin.Context) {
 	}
 	if s.mediaStore != nil {
 		media := CompletedMedia{
-			UploadID:   u.ID,
-			OwnerID:    u.OwnerID,
-			Filename:   u.Filename,
-			MimeType:   u.MimeType,
-			Size:       total,
-			SHA256:     sum,
-			MediaPath:  filepath.ToSlash(u.MediaPath),
-			BatchID:    u.BatchID,
-			CreatedAt:  u.Completed,
-			CapturedAt: u.CapturedAt,
+			UploadID:     u.ID,
+			OwnerID:      u.OwnerID,
+			Filename:     u.Filename,
+			MimeType:     u.MimeType,
+			Size:         total,
+			SHA256:       sum,
+			MediaPath:    filepath.ToSlash(u.MediaPath),
+			BatchID:      u.BatchID,
+			CreatedAt:    u.Completed,
+			CapturedAt:   u.CapturedAt,
+			StorageQuota: s.maxStorageSize,
 		}
 		if err := s.mediaStore.SaveCompletedMedia(context.Request.Context(), media); err != nil {
 			if removeErr := os.Remove(finalPath); removeErr != nil && !os.IsNotExist(removeErr) {
 				_ = context.Error(fmt.Errorf("remove uncommitted media: %w", removeErr))
 			}
 			if errors.Is(err, ErrDuplicateMedia) {
-				if removeErr := os.RemoveAll(dir); removeErr != nil {
+				if removeErr := s.removeUpload(context.Request.Context(), *u); removeErr != nil {
 					internalError(context, fmt.Errorf("remove duplicate upload chunks: %w", removeErr))
 					return
 				}
@@ -342,6 +357,10 @@ func (s *service) HandleCompleteUpload(context *gin.Context) {
 				}
 				s.uploadMux.Unlock()
 				context.JSON(http.StatusConflict, gin.H{"error": ErrDuplicateMedia.Error()})
+				return
+			}
+			if errors.Is(err, ErrStorageQuota) {
+				storageQuotaError(context)
 				return
 			}
 			internalError(context, fmt.Errorf("save completed media: %w", err))
@@ -394,7 +413,7 @@ func (s *service) HandleDeleteUpload(context *gin.Context) {
 		context.JSON(http.StatusNotFound, gin.H{"error": "upload not found"})
 		return
 	}
-	if err := os.RemoveAll(filepath.Join(s.tmpDir, id)); err != nil {
+	if err := s.removeUpload(context.Request.Context(), session.upload); err != nil {
 		internalError(context, fmt.Errorf("delete upload: %w", err))
 		return
 	}
@@ -405,6 +424,10 @@ func (s *service) HandleDeleteUpload(context *gin.Context) {
 	}
 	s.uploadMux.Unlock()
 	context.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+func storageQuotaError(context *gin.Context) {
+	context.JSON(http.StatusTooManyRequests, gin.H{"code": "upload_storage_quota_exceeded", "error": "Storage quota exceeded. Free storage or ask an administrator to increase your quota."})
 }
 
 func quotaExceeded(used, requested, limit int64) bool {

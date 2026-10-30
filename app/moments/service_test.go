@@ -137,14 +137,10 @@ func TestGenerateCreatesTimeBasedMomentsAndLeavesSingletons(t *testing.T) {
 		{ID: "late-3", CapturedAt: base.Add(2*time.Hour + 20*time.Minute)},
 		{ID: "second", CapturedAt: base.Add(30 * time.Minute)},
 	}}
-	router := testRouterWithService(New(repository, WithEnricher(testEnricher{confidence: 0.65})))
-	request := httptest.NewRequest(http.MethodPost, "/moments/generate", nil)
-	response := httptest.NewRecorder()
-
-	router.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK || response.Body.String() != `{"created":2}` {
-		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	service := New(repository, WithEnricher(testEnricher{confidence: 0.65}))
+	created, err := service.generateForOwner(context.Background(), "user-1")
+	if err != nil || created != 2 {
+		t.Fatalf("generated = %d, %v", created, err)
 	}
 	if len(repository.groups) != 2 || len(repository.groups[0]) != 3 || len(repository.groups[1]) != 3 {
 		t.Fatalf("unexpected generated groups: %#v", repository.groups)
@@ -230,6 +226,21 @@ func TestAIFeaturesCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestDisabledGenerationSkipsBackgroundAIWork(t *testing.T) {
+	repository := &testRepository{owners: []string{"user-1"}, candidateErrors: map[string]error{"user-1": errors.New("must not query candidates")}}
+	enricher := &testTwoStageEnricher{}
+	service := New(repository, WithAIFeaturesEnabled(false), WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
+	if err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := service.generateForOwner(context.Background(), "user-1"); err != nil || created != 0 {
+		t.Fatalf("disabled generation = %d, %v", created, err)
+	}
+	if len(enricher.described) != 0 || len(enricher.synthesized) != 0 || len(repository.created) != 0 {
+		t.Fatal("disabled generation performed AI work")
+	}
+}
+
 func TestGenerateUsesVisualRepresentativeAndEnrichment(t *testing.T) {
 	base := time.Date(2026, time.July, 12, 9, 30, 0, 0, time.UTC)
 	group := []Candidate{
@@ -239,14 +250,8 @@ func TestGenerateUsesVisualRepresentativeAndEnrichment(t *testing.T) {
 	}
 	repository := &testRepository{candidates: group}
 	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{group}}), WithEnricher(testEnricher{confidence: 0.9}))
-	router := testRouterWithService(service)
-	request := httptest.NewRequest(http.MethodPost, "/moments/generate", nil)
-	response := httptest.NewRecorder()
-
-	router.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	if _, err := service.generateForOwner(context.Background(), "user-1"); err != nil {
+		t.Fatal(err)
 	}
 	created := repository.created[0]
 	if created.CoverMediaID != "sharp" || created.Title != "A day by the water" || created.Description != "Sunny outdoor photos." {
@@ -265,14 +270,8 @@ func TestGenerateDescribesPersistsAndSynthesizesSelectedImages(t *testing.T) {
 	enricher := &testTwoStageEnricher{}
 	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{group}}),
 		WithImageDescriber(enricher), WithMetadataSynthesizer(enricher))
-	router := testRouterWithService(service)
-	request := httptest.NewRequest(http.MethodPost, "/moments/generate", nil)
-	response := httptest.NewRecorder()
-
-	router.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK || response.Body.String() != `{"created":1}` {
-		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	if created, err := service.generateForOwner(context.Background(), "user-1"); err != nil || created != 1 {
+		t.Fatalf("generated = %d, %v", created, err)
 	}
 	if len(enricher.described) != 3 || len(repository.descriptions) != 3 || len(enricher.synthesized) != 3 {
 		t.Fatalf("unexpected pipeline calls: described=%v persisted=%v synthesized=%v",
@@ -435,14 +434,8 @@ func TestGenerateSkipsLowDescriptionMatch(t *testing.T) {
 	}
 	repository := &testRepository{candidates: group}
 	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{group}}), WithEnricher(testEnricher{confidence: 0.64}))
-	router := testRouterWithService(service)
-	request := httptest.NewRequest(http.MethodPost, "/moments/generate", nil)
-	response := httptest.NewRecorder()
-
-	router.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK || response.Body.String() != `{"created":0}` || len(repository.created) != 0 {
-		t.Fatalf("unexpected low-match response %d: %s", response.Code, response.Body.String())
+	if created, err := service.generateForOwner(context.Background(), "user-1"); err != nil || created != 0 || len(repository.created) != 0 {
+		t.Fatalf("low-match generation = %d, %v", created, err)
 	}
 }
 
@@ -454,14 +447,8 @@ func TestGenerateSkipsGroupsWithFewerThanThreeImages(t *testing.T) {
 	}
 	repository := &testRepository{candidates: group}
 	service := New(repository, WithClusterer(testClusterer{groups: [][]Candidate{group}}), WithEnricher(testEnricher{confidence: 1}))
-	router := testRouterWithService(service)
-	request := httptest.NewRequest(http.MethodPost, "/moments/generate", nil)
-	response := httptest.NewRecorder()
-
-	router.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK || response.Body.String() != `{"created":0}` || len(repository.created) != 0 {
-		t.Fatalf("unexpected small-group response %d: %s", response.Code, response.Body.String())
+	if created, err := service.generateForOwner(context.Background(), "user-1"); err != nil || created != 0 || len(repository.created) != 0 {
+		t.Fatalf("small-group generation = %d, %v", created, err)
 	}
 }
 

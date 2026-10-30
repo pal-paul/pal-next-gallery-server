@@ -1,5 +1,11 @@
 # Photo Moments: Production Architecture and Flow
 
+> The event-driven pipeline supersedes the scheduled OpenCV/Gemini-merge flow
+> described below. Current operation uses the separate `moments-worker`, durable
+> description jobs, a shared daily image budget, and deterministic event matching.
+> See [the current worker implementation](clustering.md#current-worker-implementation).
+> The remaining sections are historical architecture notes, not current setup instructions.
+
 <!-- markdownlint-disable MD013 -->
 
 ## 1. Purpose
@@ -11,7 +17,7 @@ The pipeline is local-first:
 - Original media remains in the configured media filesystem.
 - PostgreSQL stores metadata, processing state, duplicate groups, embeddings, image descriptions, moments, and memberships.
 - Deterministic processing handles metadata, hashing, duplicate detection, clustering, and representative selection.
-- Optional model services add image embeddings and semantic descriptions.
+- Gemini adds semantic descriptions and descriptor-text embeddings.
 - No stage deletes or modifies an original media file.
 
 The generated domain object is a **moment**. Albums are a separate curated or calendar-based feature.
@@ -27,8 +33,8 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 | Metadata and thumbnails                  | Implemented              | `ffprobe` extracts technical metadata and `ffmpeg` creates bounded JPEG thumbnails                                            | Physically rotate pixels if a consumer ignores orientation metadata |
 | Exact duplicates                         | Implemented              | Owner-scoped SHA-256 checks reject duplicate upload creation                                                                  | Add a retain-and-review mode if desired                             |
 | Near duplicates                          | Implemented              | Persisted dHash values create owner-scoped groups at Hamming distance `<= 5`                                                  | Add duplicate review UI                                             |
-| Image embeddings                         | Optional                 | An HTTP provider returns versioned vectors stored in PostgreSQL                                                               | Add an ANN index when bounded scans are insufficient                |
-| Visual clustering                        | Optional                 | The production image packages an OpenCV executable that performs raw-cosine similarity scoring and average-link agglomeration | Tune thresholds against labeled collections                         |
+| Descriptor-text embeddings               | Implemented              | Gemini embeds cached image descriptions for deterministic event matching                                                      | Add an ANN index when bounded scans are insufficient                |
+| Visual clustering                        | Historical               | The image packages an OpenCV executable using histogram similarity and average-link agglomeration                            | Superseded by descriptor-text event matching                        |
 | Temporal clustering fallback             | Implemented              | Without the OpenCV worker, candidates are split at 30-minute gaps                                                             | This is less accurate than the full profile                         |
 | Representative selection                 | Implemented in CV worker | Centrality, sharpness, exposure, and diversity select 1 to 15 images                                                          | Tune weights against labeled collections                            |
 | Structured image descriptions            | Optional                 | Gemini describes each selected semantic image and results are persisted                                                       | Add explicit prompt/schema version values                           |
@@ -36,7 +42,7 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 | Moment persistence                       | Implemented              | Advisory locking and one transaction prevent duplicate ownership assignment                                                   | None                                                                |
 | Manual Moment lifecycle                  | Implemented              | Manual creation, media editing, covers, publish, decline/delete, and candidate reuse                                          | Add split workflow if needed                                        |
 | Album and Moment metadata suggestions    | Optional                 | Up to six random members are sampled; cached descriptions are reused and suggestions remain editable                          | Add independent retryable AI jobs                                   |
-| Global AI capability flag                | Implemented              | `ENV_AI_FEATURE=NO` disables CLIP, Gemini, AI discovery, and suggestions without disabling manual workflows                   | None                                                                |
+| Global AI capability flag                | Implemented              | `ENV_AI_FEATURE=NO` disables Gemini, AI discovery, and suggestions without disabling manual workflows                         | None                                                                |
 | Deterministic moment creation without AI | Gap                      | The server runs without AI, but automatic moment creation currently skips groups when no enricher is configured               | Add deterministic title/description fallback                        |
 
 <!-- markdownlint-enable MD060 -->
@@ -45,7 +51,10 @@ The generated domain object is a **moment**. Albums are a separate curated or ca
 
 The production image builds the OpenCV worker with CGO and exposes it at `/app/worker`. Both Compose files configure that path. The full AI path also requires `ENV_AI_FEATURE` to be enabled and a Gemini API key to be configured.
 
-The Compose stack includes a private CPU CLIP service. It caches model weights in a persistent volume and stores normalized image vectors in PostgreSQL during media processing.
+The local image-embedding service has been removed. No model-cache volume or
+additional inference container is required. Existing legacy image-vector data
+is retained but is no longer read or updated; new databases do not create its
+table. Current descriptor-text vectors are cached with image descriptions.
 
 ## 3. Production Profiles
 
@@ -69,7 +78,6 @@ Behavior:
 Adds:
 
 - OpenCV moment worker built with `-tags opencv`
-- CLIP embedding HTTP service using `openai/clip-vit-base-patch32`
 - Gemini API access
 - Paid-tier Gemini API key
 - Gemini vision and text models
@@ -78,7 +86,10 @@ This profile activates the complete flow documented below.
 
 ### 3.3 External inference profile
 
-The embedding endpoint may run on another trusted machine. Selected semantic images leave the media host for Gemini processing. Use a paid Gemini tier, restrict and rotate the API key, and define retention and audit policies for this personal data.
+Selected semantic images leave the media host for hosted Gemini processing.
+There is no separate image-embedding endpoint. Use a paid Gemini tier, restrict
+and rotate the API key, and define retention and audit policies for this
+personal data.
 
 ## 4. Production Deployment Topology
 
@@ -96,7 +107,6 @@ flowchart TB
     end
 
     subgraph Models[Optional inference services]
-        Embed[SigLIP or CLIP<br/>embedding HTTP service]
         Gemini[Gemini API]
         Vision[Gemini vision model]
         Text[Gemini text model]
@@ -109,7 +119,6 @@ flowchart TB
     Server -->|incomplete chunks| Temp
     Server -->|JSON over stdin and stdout| CV
     CV -->|read selected image paths| Media
-    Server -->|thumbnail as base64 JSON| Embed
     Server -->|HTTPS generateContent| Gemini
     Gemini --> Vision
     Gemini --> Text
@@ -123,7 +132,6 @@ flowchart TB
 | PostgreSQL        | Durable metadata, queues, relations, generated records             | Original media bytes    |
 | Media volume      | Original files and generated thumbnails                            | Queue state             |
 | OpenCV worker     | Per-run features, clustering, representative scores                | Durable records         |
-| Embedding service | Vector inference                                                   | Photo persistence       |
 | Gemini API        | Structured visual and text inference                               | Permanent photo storage |
 
 ## 5. End-to-End Production Flow
@@ -137,8 +145,6 @@ flowchart TD
     E[Background processor claims job]
     F[Extract metadata and create thumbnail]
     G[Calculate dHash]
-    H{Embedding provider enabled?}
-    I[Request and store versioned embedding]
     J[Group near duplicates and complete job]
     K[Scheduled or manual moment generation]
     L[Load eligible seven-day candidates]
@@ -160,9 +166,7 @@ flowchart TD
     A --> B
     B -->|yes| C
     B -->|no| D
-    D --> E --> F --> G --> H
-    H -->|yes| I --> J
-    H -->|no| J
+    D --> E --> F --> G --> J
     J --> K --> L --> M
     M -->|no| N --> P
     M -->|yes| O --> P
@@ -223,12 +227,9 @@ flowchart TD
     F[Parse dimensions, duration, capture time,<br/>GPS, camera, orientation, raw tags]
     G[Run ffmpeg thumbnail, timeout 5 minutes]
     H[Calculate 64-bit dHash from thumbnail]
-    I{Embedding enabled?}
-    J[POST thumbnail to embedding endpoint]
     K[Atomic completion transaction]
     L[Persist media fields and EXIF]
     M[Create or update near-duplicate group]
-    N[Persist embedding when present]
     O[Mark completed]
     P{Attempt count below 3?}
     Q[Requeue with exponential delay]
@@ -236,14 +237,11 @@ flowchart TD
 
     A --> B
     B -->|no| C --> A
-    B -->|yes| D --> E --> F --> G --> H --> I
-    I -->|yes| J --> K
-    I -->|no| K
-    K --> L --> M --> N --> O
+    B -->|yes| D --> E --> F --> G --> H --> K
+    K --> L --> M --> O
     E -. error .-> P
     G -. error .-> P
     H -. error .-> P
-    J -. error .-> P
     K -. error .-> P
     P -->|yes| Q --> A
     P -->|no| R
@@ -304,7 +302,8 @@ The OpenCV worker receives candidate JSON on standard input and returns group JS
 
 ### 8.3 Similarity model
 
-When embeddings exist for both images, cosine similarity is the visual signal. Otherwise the color-histogram intersection is used.
+The legacy OpenCV worker uses color-histogram intersection as its visual
+signal. It no longer accepts image-embedding vectors.
 
 $$
 S = 0.55S_{visual} + 0.20S_{dHash} + 0.15S_{time} + 0.10S_{location}
@@ -456,7 +455,6 @@ erDiagram
     users ||--o{ media_uploads : owns
     media_uploads ||--|| media_processing_jobs : queues
     media_uploads ||--o| media_exif : has
-    media_uploads ||--o{ media_embeddings : has
     media_uploads ||--o{ media_image_descriptions : has
     users ||--o{ media_duplicate_groups : owns
     media_duplicate_groups ||--|{ media_duplicate_group_members : contains
@@ -486,14 +484,6 @@ erDiagram
         jsonb raw_exif
     }
 
-    media_embeddings {
-        text upload_id PK
-        text model PK
-        text version PK
-        int dimensions
-        float_array embedding
-    }
-
     media_image_descriptions {
         text upload_id PK
         text model PK
@@ -505,6 +495,9 @@ erDiagram
         text scene
         text weather
         text description
+        text_array keywords
+        float_array text_embedding
+        text text_embedding_model
     }
 
     moments {
@@ -535,8 +528,8 @@ erDiagram
 | Trigger             | Default                             | Behavior                                            |
 | ------------------- | ----------------------------------- | --------------------------------------------------- |
 | Processing worker   | Continuous                          | Drains queued jobs; waits five seconds when idle    |
-| Moment generation   | Every `168h`                        | Runs for all users after each interval tick         |
-| Manual generation   | `POST /moments/generate`            | Runs immediately for the authenticated owner        |
+| Moment generation   | Upload preprocessing completion    | Queues description, text embedding, and event matching |
+| Manual generation   | `POST /moments/generate`            | Queues eligible photos for the authenticated owner  |
 | Manual creation     | `POST /moments`                     | Creates a user-edited draft without calling AI      |
 | Metadata suggestion | Explicit Moment or Album action     | Samples up to six members and returns editable text |
 | Automatic albums    | Daily at `02:00` local time         | Separate feature; reconciles albums, not moments    |
@@ -545,7 +538,9 @@ erDiagram
 
 <!-- markdownlint-enable MD060 -->
 
-The moment scheduler does not run immediately at startup. Operators can use the manual endpoint for an initial run or wait for the first interval.
+The weekly moment scheduler has been removed. The separate moment worker drains
+ready queued photos immediately, waiting five seconds only when idle. Use the
+manual endpoint to enqueue existing unassigned photos without a library-wide schedule.
 
 ## 13. Runtime Configuration
 
@@ -566,11 +561,9 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 
 | Variable                        | Default                           | Effect when empty                                                 |
 | ------------------------------- | --------------------------------- | ----------------------------------------------------------------- |
-| `ENV_AI_FEATURE`                | `YES`                             | `NO` disables every AI-backed path                                |
-| `ENV_MOMENTS_INTERVAL`          | `168h`                            | Invalid or non-positive values stop startup                       |
-| `ENV_MOMENTS_CV_WORKER`         | empty                             | Uses temporal clustering                                          |
-| `ENV_MOMENTS_EMBEDDING_URL`     | `http://embedding-api:8000/embed` | Private Compose embedding endpoint                                |
-| `ENV_MOMENTS_EMBEDDING_MODEL`   | `openai/clip-vit-base-patch32`    | CLIP model loaded by the endpoint                                 |
+| `ENV_AI_FEATURE`                | `YES`                             | `NO` disables every AI-backed path and retains the moment queue  |
+| `ENV_MOMENTS_DAILY_IMAGE_LIMIT` | `100`                             | New image-description attempts per UTC day; zero pauses processing |
+| `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001`         | 768-dimensional descriptor-text vectors                           |
 | `ENV_MOMENTS_GEMINI_API_KEY`    | empty                             | Automatic moment creation is skipped                              |
 | `ENV_MOMENTS_GEMINI_URL`        | Google Gemini API                 | Gemini API base URL                                               |
 | `ENV_MOMENTS_GEMINI_MODEL`      | `gemini-3.5-flash-lite`           | Gemini model used for image descriptions                          |
@@ -580,7 +573,8 @@ The moment scheduler does not run immediately at startup. Operators can use the 
 
 ### Fixed algorithm values
 
-These values are currently compile-time constants:
+The following table describes the legacy implementation only. Current event
+scoring and five-photo promotion defaults are documented in [clustering.md](clustering.md).
 
 | Setting                       | Value      |
 | ----------------------------- | ---------- |
@@ -605,12 +599,12 @@ These values are currently compile-time constants:
 
 ### Full intelligence profile
 
-- Verify `/app/worker` starts in the production image and `ENV_MOMENTS_CV_WORKER` points to it.
+- Start `/app/moments-worker` separately and enable Gemini in both services.
 - Ensure the worker can read the same media paths as the server.
 - Allow the embedding container to download and cache its model before the first upload.
 - Configure a restricted paid-tier Gemini API key.
 - Confirm the server can reach the Gemini API over HTTPS.
-- Run one manual generation request before relying on the weekly scheduler.
+- Verify a new upload queues description, embedding, and event evaluation.
 
 ### Security and privacy
 

@@ -17,6 +17,11 @@ type ImageDescriber interface {
 	Describe(context.Context, Candidate) (ImageDescription, error)
 }
 
+type TextEmbedder interface {
+	EmbedDescription(context.Context, ImageDescription) ([]float64, error)
+	TextEmbeddingModel() string
+}
+
 type MetadataSynthesizer interface {
 	Synthesize(context.Context, Moment, []ImageDescription) (Metadata, error)
 }
@@ -26,16 +31,19 @@ type SemanticClusterMerger interface {
 }
 
 type ImageDescription struct {
-	MediaID      string   `json:"mediaId,omitempty"`
-	Model        string   `json:"-"`
-	Version      string   `json:"-"`
-	People       []string `json:"people"`
-	Activities   []string `json:"activities"`
-	LocationType string   `json:"location_type"`
-	Objects      []string `json:"objects"`
-	Scene        string   `json:"scene"`
-	Weather      string   `json:"weather"`
-	Description  string   `json:"description"`
+	Embedding      []float64 `json:"-"`
+	EmbeddingModel string    `json:"-"`
+	Keywords       []string  `json:"keywords"`
+	MediaID        string    `json:"mediaId,omitempty"`
+	Model          string    `json:"-"`
+	Version        string    `json:"-"`
+	People         []string  `json:"people"`
+	Activities     []string  `json:"activities"`
+	LocationType   string    `json:"location_type"`
+	Objects        []string  `json:"objects"`
+	Scene          string    `json:"scene"`
+	Weather        string    `json:"weather"`
+	Description    string    `json:"description"`
 }
 
 type Metadata struct {

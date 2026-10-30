@@ -37,15 +37,43 @@ Start PostgreSQL and the application:
 docker compose --env-file .env -f build/compose.yaml up --build
 ```
 
-This starts the core gallery without downloading the CLIP model. To enable AI,
-set `ENV_AI_FEATURE=YES` and start the `ai` profile:
+To enable AI, set `ENV_AI_FEATURE=YES` and configure the Gemini API key before
+starting the same stack. No additional Compose profile, local embedding
+service, or model download is required.
 
-```bash
-docker compose --env-file .env -f build/compose.yaml --profile ai up --build
-```
+The separate `moments-worker` service processes a durable PostgreSQL queue after
+thumbnail/EXIF processing. Upload requests never wait for Gemini. Set
+`ENV_MOMENTS_DAILY_IMAGE_LIMIT=100` for at most 100 new image-description attempts
+per UTC day across worker instances. Failed attempts count; cached retries do not.
+Descriptor-embedding and event-title requests are separate from this image limit.
 
-The OpenCV Moments worker is included in the application image. Selected photos
-are sent to Gemini only when Moment enrichment is enabled.
+On each enabled worker startup, existing processed photos across all owners are
+automatically queued if their description is missing or their descriptor-text
+embedding is missing, invalid, or from a different model. There is no photo-age
+cutoff. This includes photos already in moments, without renaming or moving them.
+Deleted photos, videos, moment opt-outs, and secondary near duplicates are skipped.
+Discovery is idempotent and reuses cached descriptions; completed feature work is
+not requeued on restart. The worker keeps the remaining backlog across restarts
+and resumes new vision calls on the next UTC day until it finishes. No manual
+generation request or weekly schedule is required.
+
+Set `ENV_AI_FEATURE=NO` in both services and
+recreate them to stop Gemini inference while retaining queued work. Successful
+jobs are removed, but generated descriptions and text embeddings remain cached. Five confidently
+matching photos create a moment; later matches retain its title and description.
+The weekly moment scheduler has been removed. The worker embeds generated descriptor
+text using `ENV_MOMENTS_GEMINI_EMBEDDING_MODEL=gemini-embedding-001` (768 dimensions),
+then uses cosine retrieval/scoring with capture-time and GPS evidence.
+Incompatible or missing descriptor vectors fall back to tokens.
+
+For native development, export the database, media, and Gemini environment
+variables and run `go run ./cmd/moments-worker` separately from the server.
+`POST /moments/generate` queues eligible existing photos for the current owner
+without performing inference and returns `202 Accepted`. Album metadata requests
+also return `202 Accepted` with a durable job and a `Location` polling URL. The
+same worker produces suggestions from cached descriptions; the web dialog polls
+for the result without holding an HTTP request open. Suggestions never overwrite
+the album until saved. See [the worker details](docs/clustering.md).
 
 The example configuration exposes the gallery and API at
 `http://127.0.0.1:8081`. Change `ENV_PORT` in `.env` if that port is occupied.

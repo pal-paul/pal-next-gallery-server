@@ -95,6 +95,13 @@ prevent a stored cookie from being sent.
   include only files that will be uploaded.
 - `GET /media/upload-batches/{id}` reports completed files and bytes. `POST
 /media/upload-batches/{id}/cancel` prevents new or late completions.
+- Upload creation returns `429` with `upload_active_limit` or
+  `upload_pending_limit` and a `Retry-After` header for temporary limits.
+  Clients may retry these responses with a bounded delay; iOS retries up to
+  three times. `upload_storage_quota_exceeded` requires freeing storage or
+  increasing the quota, not retries. Cancel unused sessions with
+  `DELETE /media/upload/{id}` using a task that survives upload cancellation.
+  Older abandoned sessions still require cancellation or normal cleanup.
 - Completed uploads enqueue a PostgreSQL-backed FFmpeg job. `GET
 /media/files/{id}/processing-status` reports progress. Failed jobs are retried,
   and interrupted jobs are reclaimed after 15 minutes in `processing`.
@@ -140,22 +147,33 @@ prevent a stored cookie from being sent.
   and the required Gemini providers are configured. Clients should hide or
   disable AI actions when it is false.
 - `POST /moments` creates a manual, user-edited draft from one or more photos.
-  `POST /moments/generate` runs AI-assisted discovery immediately; the default
-  background interval is `168h`.
+  `POST /moments/generate` returns `202 Accepted` with `created: 0` and a
+  `queued` count, without waiting for inference. Refresh `GET /moments` for
+  results. Upload preprocessing also queues photos automatically; there is no
+  weekly moment scheduler.
 - Generated Moments remain drafts until the user publishes them. Users can edit
   title and description, add or remove photos, select a cover, or delete a
   draft. Deleting a declined draft does not delete media and makes those photos
   eligible for future Moment generation.
-- `POST /moments/{id}/metadata-suggestion` and `POST
-/albums/{id}/metadata-suggestion` randomly sample at most six member photos,
-  reuse cached descriptions, and return editable title and description
-  suggestions. They do not update the collection directly.
-- Uploading an image does not call Gemini. When AI is enabled, background media
-  processing creates one local CLIP embedding. Gemini Vision is used later only
-  for selected images without cached descriptions; Gemini Text synthesizes
-  metadata from those descriptions.
-- `ENV_AI_FEATURE=NO` disables CLIP embeddings, Gemini configuration, scheduled
-  Moment discovery, manual AI discovery, and metadata suggestions. Uploads,
+- `POST /moments/{id}/metadata-suggestion` synchronously returns an editable
+  suggestion from up to six sampled member photos and cached descriptions.
+- `POST /albums/{id}/metadata-suggestion` returns `202 Accepted` with a durable
+  job and a `Location` header. Poll
+  `GET /albums/{id}/metadata-suggestion/{jobID}` until `completed` (read
+  `result`) or `failed` (read `error`). An existing active job is reused.
+  Missing image descriptions wait for normal quota-limited processing. The
+  separate moment worker must be running. Neither suggestion endpoint saves
+  collection metadata automatically; users review and save the result.
+- Upload handlers do not call Gemini. The separate moment worker caches each
+  eligible image's description and Gemini descriptor-text embedding, then uses
+  cosine/time/GPS event matching. Five distinct matching photos create a named
+  draft; later additions keep the name. No local image-embedding service is
+  required.
+- `ENV_MOMENTS_DAILY_IMAGE_LIMIT=100` limits image-description attempts per UTC
+  day; embedding and naming text calls are separate. Cached retries reuse features.
+- `ENV_AI_FEATURE=NO` disables Gemini worker inference,
+  manual AI discovery, and metadata suggestions. Recreate server and worker to
+  apply the setting. Uploads,
   manual Moments, Albums, and all non-AI editing remain available.
 
 ## Album editing
@@ -164,6 +182,9 @@ prevent a stored cookie from being sent.
   multi-select picker containing active photos that are not already members.
 - Album title and description remain manually editable before and after an AI
   suggestion. Adding images and changing the cover are independent of Gemini.
+- Automatic albums are system-managed: metadata edits, deletion, manual
+  reordering, and membership changes are rejected. Cover selection remains
+  available.
 
 ## Embedded pages
 
