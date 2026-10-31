@@ -30,9 +30,22 @@ type Repository interface {
 	CancelUploadBatch(context.Context, string, string) error
 }
 
-type Service struct{ repository Repository }
+type UploadCanceler interface {
+	CancelBatchUploads(context.Context, string, string) error
+}
 
-func New(repository Repository) *Service { return &Service{repository: repository} }
+type Service struct {
+	repository Repository
+	uploads    UploadCanceler
+}
+
+func New(repository Repository, uploads ...UploadCanceler) *Service {
+	service := &Service{repository: repository}
+	if len(uploads) > 0 {
+		service.uploads = uploads[0]
+	}
+	return service
+}
 
 func (service *Service) Create(context *gin.Context) {
 	user, ok := currentUser(context)
@@ -69,6 +82,13 @@ func (service *Service) Cancel(context *gin.Context) {
 	if err := service.repository.CancelUploadBatch(context, context.Param("id"), user.ID); err != nil {
 		context.JSON(http.StatusNotFound, gin.H{"error": "upload batch not found"})
 		return
+	}
+	if service.uploads != nil {
+		if err := service.uploads.CancelBatchUploads(context.Request.Context(), context.Param("id"), user.ID); err != nil {
+			_ = context.Error(err)
+			context.JSON(http.StatusInternalServerError, gin.H{"error": "unable to cancel unfinished uploads"})
+			return
+		}
 	}
 	context.Status(http.StatusNoContent)
 }

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"pal-next-gallery-server/app/auth"
+	"pal-next-gallery-server/app/batch"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,6 +37,7 @@ type recordingMediaRepository struct {
 	duplicate   *CompletedMedia
 	storedBytes int64
 	saveErr     error
+	releaseErr  error
 	quota       *int64
 	pending     map[string]Upload
 }
@@ -75,6 +77,9 @@ func (repository *recordingMediaRepository) RestoreUploadStorage(_ context.Conte
 }
 
 func (repository *recordingMediaRepository) ReleaseUploadStorage(_ context.Context, ownerID, uploadID string) error {
+	if repository.releaseErr != nil {
+		return repository.releaseErr
+	}
 	if repository.pending[uploadID].OwnerID == ownerID {
 		delete(repository.pending, uploadID)
 	}
@@ -308,6 +313,86 @@ func TestCreateUploadEnforcesPerUserQuotas(t *testing.T) {
 			}
 		})
 	}
+}
+
+type recordingBatchRepository struct {
+	batch batch.Batch
+}
+
+func (repository *recordingBatchRepository) CreateUploadBatch(_ context.Context, item batch.Batch) error {
+	repository.batch = item
+	return nil
+}
+
+func (repository *recordingBatchRepository) GetUploadBatch(_ context.Context, id, ownerID string) (batch.Batch, error) {
+	if repository.batch.ID != id || repository.batch.OwnerID != ownerID {
+		return batch.Batch{}, errors.New("upload batch not found")
+	}
+	return repository.batch, nil
+}
+
+func (repository *recordingBatchRepository) CancelUploadBatch(ctx context.Context, id, ownerID string) error {
+	if _, err := repository.GetUploadBatch(ctx, id, ownerID); err != nil {
+		return err
+	}
+	repository.batch.Status = "canceled"
+	return nil
+}
+
+func TestCancelBatchUploadsReleasesQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := t.TempDir()
+	repository := &recordingMediaRepository{}
+	service := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 4,
+		WithMediaRepository(repository), WithMaxActiveUploads(1))
+	router := newTestRouter(t, service)
+	created := createUpload(t, router, `{"filename":"first.mp4","size":4,"batchId":"batch-1"}`)
+	response := performRequest(router, http.MethodPost, "/media/upload", bytes.NewBufferString(`{"filename":"second.mp4","size":4}`))
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected upload limit, got %d: %s", response.Code, response.Body.String())
+	}
+	ownerID := repository.pending[created.ID].OwnerID
+	if err := service.CancelBatchUploads(context.Background(), "batch-1", "another-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.pending) != 1 {
+		t.Fatal("another owner canceled the upload")
+	}
+	if err := service.CancelBatchUploads(context.Background(), "another-batch", ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.pending) != 1 {
+		t.Fatal("canceling another batch removed the upload")
+	}
+	batchRepository := &recordingBatchRepository{batch: batch.Batch{ID: "batch-1", OwnerID: ownerID, Status: "active"}}
+	batchService := batch.New(batchRepository, service)
+	router.POST("/media/upload-batches/:id/cancel", batchService.Cancel)
+	request := httptest.NewRequest(http.MethodPost, "/media/upload-batches/batch-1/cancel", nil)
+	request.Header.Set("X-Test-User", "another-owner")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || len(repository.pending) != 1 {
+		t.Fatalf("another owner canceled the batch: %d", response.Code)
+	}
+	repository.releaseErr = errors.New("storage release failed")
+	response = performRequest(router, http.MethodPost, "/media/upload-batches/batch-1/cancel", nil)
+	if response.Code != http.StatusInternalServerError || len(repository.pending) != 1 {
+		t.Fatalf("failed cleanup must retain a retryable session: %d", response.Code)
+	}
+	repository.releaseErr = nil
+	for attempt := 0; attempt < 2; attempt++ {
+		response = performRequest(router, http.MethodPost, "/media/upload-batches/batch-1/cancel", nil)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("cancel returned %d: %s", response.Code, response.Body.String())
+		}
+	}
+	if len(repository.pending) != 0 {
+		t.Fatal("canceled upload retained its storage reservation")
+	}
+	if _, err := os.Stat(filepath.Join(root, "tmp", created.ID)); !os.IsNotExist(err) {
+		t.Fatalf("canceled upload directory still exists: %v", err)
+	}
+	createUpload(t, router, `{"filename":"second.mp4","size":4}`)
 }
 
 func TestCreateUploadEnforcesTotalStorageQuota(t *testing.T) {

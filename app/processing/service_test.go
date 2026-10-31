@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -68,6 +69,51 @@ func TestProcessOnceCompletesOrRetriesJob(t *testing.T) {
 	}
 }
 
+func TestProcessHEIFSample(t *testing.T) {
+	samplePath := os.Getenv("GALLERY_HEIF_TEST_FILE")
+	if samplePath == "" {
+		t.Skip("set GALLERY_HEIF_TEST_FILE to validate a representative HEIF photo")
+	}
+	sample, err := os.ReadFile(samplePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.heic"), sample, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New(nil, root)
+	metadata, err := service.processMedia(context.Background(), Job{OwnerID: "owner", UploadID: "sample", MediaPath: "sample.heic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(filepath.Join(root, metadata.ThumbnailPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbnail, decodeErr := jpeg.Decode(file)
+	if err := errors.Join(decodeErr, file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	bounds := thumbnail.Bounds()
+	if bounds.Dx() > 640 || bounds.Dy() > 640 || metadata.Width < bounds.Dx() || metadata.Height < bounds.Dy() {
+		t.Fatalf("invalid thumbnail dimensions: %v, primary: %dx%d", bounds, metadata.Width, metadata.Height)
+	}
+	colorPixels := 0
+	for row := bounds.Min.Y; row < bounds.Max.Y; row++ {
+		for column := bounds.Min.X; column < bounds.Max.X; column++ {
+			red, green, blue, _ := thumbnail.At(column, row).RGBA()
+			if max(red, green, blue)-min(red, green, blue) > 4096 {
+				colorPixels++
+			}
+		}
+	}
+	if colorPixels < bounds.Dx()*bounds.Dy()/10 {
+		t.Fatalf("representative color photo became monochrome: %d color pixels", colorPixels)
+	}
+	t.Logf("primary: %dx%d, thumbnail: %dx%d, color pixels: %d", metadata.Width, metadata.Height, bounds.Dx(), bounds.Dy(), colorPixels)
+}
+
 func TestProcessOnceRecordsFailureWithIndependentContext(t *testing.T) {
 	repository := &jobRepository{job: Job{ID: "job"}, available: true}
 	service := New(repository, t.TempDir())
@@ -107,6 +153,68 @@ func TestFirstTagReturnsFirstNonEmptyValue(t *testing.T) {
 	tags := map[string]string{"make": " ", "camera_make": "Fujifilm", "model": "X-T5"}
 	if got := firstTag(tags, "make", "camera_make"); got != "Fujifilm" {
 		t.Fatalf("unexpected camera make: %q", got)
+	}
+}
+
+func TestProcessHEIFPreservesColor(t *testing.T) {
+	for _, executable := range []string{"magick", "ffprobe", "ffmpeg"} {
+		if _, err := exec.LookPath(executable); err != nil {
+			t.Skipf("%s is required for HEIF integration test", executable)
+		}
+	}
+	root := t.TempDir()
+	source := image.NewRGBA(image.Rect(0, 0, 900, 300))
+	colors := []color.RGBA{{R: 240, G: 20, B: 20, A: 255}, {R: 20, G: 240, B: 20, A: 255}, {R: 20, G: 20, B: 240, A: 255}}
+	for row := 0; row < source.Bounds().Dy(); row++ {
+		for column := 0; column < source.Bounds().Dx(); column++ {
+			source.SetRGBA(column, row, colors[column/300])
+		}
+	}
+	file, err := os.Create(filepath.Join(root, "source.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodeErr := jpeg.Encode(file, source, &jpeg.Options{Quality: 100})
+	if err := errors.Join(encodeErr, file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	for _, extension := range []string{".HEIC", ".heif"} {
+		t.Run(extension, func(t *testing.T) {
+			input := filepath.Join(root, "photo"+extension)
+			command := exec.Command("magick", "-limit", "thread", "2", filepath.Join(root, "source.jpg"), "HEIC:"+input)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("encode HEIF: %v: %s", err, output)
+			}
+			service := New(nil, root)
+			metadata, err := service.processMedia(context.Background(), Job{OwnerID: "owner", UploadID: "photo", MediaPath: "photo" + extension})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if metadata.Width != 900 || metadata.Height != 300 || metadata.Duration != 0 {
+				t.Fatalf("unexpected primary image metadata: %+v", metadata)
+			}
+			thumbnailFile, err := os.Open(filepath.Join(root, metadata.ThumbnailPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			thumbnail, decodeErr := jpeg.Decode(thumbnailFile)
+			if err := errors.Join(decodeErr, thumbnailFile.Close()); err != nil {
+				t.Fatal(err)
+			}
+			bounds := thumbnail.Bounds()
+			if bounds.Dx() > 640 || bounds.Dy() > 640 {
+				t.Fatalf("thumbnail too large: %v", bounds)
+			}
+			for index := range colors {
+				red, green, blue, _ := thumbnail.At((2*index+1)*bounds.Dx()/6, bounds.Dy()/2).RGBA()
+				channels := []uint32{red, green, blue}
+				for other := range channels {
+					if other != index && channels[index] <= channels[other]*3 {
+						t.Fatalf("color patch %d lost its color: %v", index, channels)
+					}
+				}
+			}
+		})
 	}
 }
 

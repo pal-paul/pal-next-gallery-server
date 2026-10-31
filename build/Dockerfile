@@ -34,7 +34,7 @@ ARG ENV_MEDIA_DIR=/data/gallery
 ARG ENV_TMP_DIR=/data/tmp
 ARG ENV_PORT=8081
 
-RUN apk add --no-cache ca-certificates ffmpeg libopencv_aruco libopencv_photo libopencv_video opencv tzdata \
+RUN apk add --no-cache ca-certificates ffmpeg imagemagick imagemagick-heic libopencv_aruco libopencv_photo libopencv_video opencv tzdata \
     && addgroup -S uploader \
     && adduser -S -G uploader uploader \
     && mkdir -p "${ENV_TMP_DIR}" "${ENV_MEDIA_DIR}" \

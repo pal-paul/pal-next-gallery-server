@@ -28,7 +28,7 @@ func (store *Postgres) GetUploadBatch(ctx context.Context, id, ownerID string) (
 
 func (store *Postgres) CancelUploadBatch(ctx context.Context, id, ownerID string) error {
 	result, err := store.pool.Exec(ctx, `UPDATE upload_batches SET status = 'canceled'
-		WHERE id = $1 AND owner_id = $2 AND status = 'active'`, id, ownerID)
+		WHERE id = $1 AND owner_id = $2 AND status IN ('active', 'canceled')`, id, ownerID)
 	if err == nil && result.RowsAffected() == 0 {
 		return errors.New("active upload batch not found")
 	}

@@ -34,6 +34,7 @@ type IUploaderService interface {
 	HandleCompleteUpload(context *gin.Context)
 	HandleGetUploadStatus(context *gin.Context)
 	HandleDeleteUpload(context *gin.Context)
+	CancelBatchUploads(context.Context, string, string) error
 	CleanupExpiredUploads(time.Time, time.Duration) (int, error)
 }
 
@@ -227,6 +228,34 @@ func (s *service) removeUpload(ctx context.Context, upload Upload) error {
 		return errors.Join(err, restoreErr)
 	}
 	return nil
+}
+
+func (s *service) CancelBatchUploads(ctx context.Context, batchID, ownerID string) error {
+	s.uploadMux.RLock()
+	sessions := make(map[string]*uploadSession)
+	for id, session := range s.uploads {
+		if session.upload.BatchID == batchID && session.upload.OwnerID == ownerID {
+			sessions[id] = session
+		}
+	}
+	s.uploadMux.RUnlock()
+
+	var cleanupErrors []error
+	for id, session := range sessions {
+		session.mutex.Lock()
+		if !session.deleted {
+			if err := s.removeUpload(ctx, session.upload); err != nil {
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("cancel upload %q: %w", id, err))
+			} else {
+				session.deleted = true
+				s.uploadMux.Lock()
+				delete(s.uploads, id)
+				s.uploadMux.Unlock()
+			}
+		}
+		session.mutex.Unlock()
+	}
+	return errors.Join(cleanupErrors...)
 }
 
 func (s *service) CleanupExpiredUploads(now time.Time, maxAge time.Duration) (int, error) {

@@ -92,10 +92,6 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 			return
 		}
 	}
-	if req.BatchID != "" && (s.mediaStore == nil || s.mediaStore.ValidateUploadBatch(context.Request.Context(), req.BatchID, identity.ID) != nil) {
-		context.JSON(http.StatusBadRequest, gin.H{"error": "active upload batch not found"})
-		return
-	}
 	if len(req.MimeType) > 255 {
 		context.JSON(http.StatusBadRequest, gin.H{"error": "mime_type is too long"})
 		return
@@ -115,6 +111,10 @@ func (s *service) HandleCreateUpload(context *gin.Context) {
 	}
 	s.uploadMux.Lock()
 	defer s.uploadMux.Unlock()
+	if req.BatchID != "" && (s.mediaStore == nil || s.mediaStore.ValidateUploadBatch(context.Request.Context(), req.BatchID, identity.ID) != nil) {
+		context.JSON(http.StatusBadRequest, gin.H{"error": "active upload batch not found"})
+		return
+	}
 	active, pending := 0, int64(0)
 	for _, existing := range s.uploads {
 		if existing.upload.OwnerID == identity.ID && !existing.deleted {

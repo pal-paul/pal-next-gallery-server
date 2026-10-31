@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"image/jpeg"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,9 +113,22 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 	if err != nil {
 		return Metadata{}, err
 	}
+	thumbnailInput := input
+	var primaryConfig image.Config
+	switch strings.ToLower(filepath.Ext(input)) {
+	case ".heic", ".heif", ".hif":
+		thumbnailInput, primaryConfig, err = decodeHEIFPrimary(ctx, input)
+		if err != nil {
+			return Metadata{}, err
+		}
+		defer os.RemoveAll(filepath.Dir(thumbnailInput))
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	output, err := exec.CommandContext(probeCtx, "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", input).Output()
+	if err != nil && thumbnailInput != input {
+		output, err = exec.CommandContext(probeCtx, "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", thumbnailInput).Output()
+	}
 	if err != nil {
 		return Metadata{}, fmt.Errorf("ffprobe: %w", err)
 	}
@@ -139,6 +154,10 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 		}
 	}
 	metadata.Duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
+	if thumbnailInput != input {
+		metadata.Width, metadata.Height = primaryConfig.Width, primaryConfig.Height
+		metadata.Duration = 0
+	}
 	tags := make(map[string]string)
 	for key, value := range probe.Format.Tags {
 		tags[strings.ToLower(key)] = value
@@ -151,21 +170,7 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 	metadata.CameraMake = firstTag(tags, "make", "camera_make", "com.apple.quicktime.make")
 	metadata.CameraModel = firstTag(tags, "model", "camera_model", "com.apple.quicktime.model")
 	metadata.Orientation = firstTag(tags, "orientation", "rotate")
-	for _, key := range []string{"creation_time", "date", "datetimeoriginal", "com.apple.quicktime.creationdate"} {
-		if value := tags[key]; value != "" {
-			for _, layout := range []string{time.RFC3339, "2006:01:02 15:04:05"} {
-				parsed, parseErr := time.Parse(layout, value)
-				if parseErr != nil {
-					continue
-				}
-				metadata.CapturedAt = &parsed
-				break
-			}
-		}
-		if metadata.CapturedAt != nil {
-			break
-		}
-	}
+	metadata.CapturedAt = capturedAtFromTags(tags)
 	if latitude, err := strconv.ParseFloat(tags["gpslatitude"], 64); err == nil && latitude >= -90 && latitude <= 90 {
 		metadata.Latitude = &latitude
 	}
@@ -192,7 +197,7 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 	}
 	thumbnailCtx, thumbnailCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer thumbnailCancel()
-	command := exec.CommandContext(thumbnailCtx, "ffmpeg", "-nostdin", "-y", "-i", input, "-vf", "thumbnail,scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", thumbnail)
+	command := exec.CommandContext(thumbnailCtx, "ffmpeg", "-nostdin", "-y", "-i", thumbnailInput, "-vf", "thumbnail,scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", thumbnail)
 	if combined, err := command.CombinedOutput(); err != nil {
 		return Metadata{}, fmt.Errorf("ffmpeg thumbnail: %w: %s", err, strings.TrimSpace(string(combined)))
 	}
@@ -202,6 +207,48 @@ func (service *Service) processMedia(ctx context.Context, job Job) (Metadata, er
 		return Metadata{}, fmt.Errorf("calculate perceptual hash: %w", err)
 	}
 	return metadata, nil
+}
+
+func decodeHEIFPrimary(ctx context.Context, input string) (output string, config image.Config, err error) {
+	directory, err := os.MkdirTemp("", "gallery-heif-")
+	if err != nil {
+		return "", image.Config{}, fmt.Errorf("create HEIF decode directory: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(directory)
+		}
+	}()
+	output = filepath.Join(directory, "primary.png")
+	decodeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(decodeCtx, "magick", "-limit", "thread", "2", "-limit", "memory", "256MiB", "-limit", "map", "512MiB",
+		"-define", "heic:primary-image=true", input, "-auto-orient", "-colorspace", "sRGB", "-depth", "8", output)
+	if combined, commandErr := command.CombinedOutput(); commandErr != nil {
+		return "", image.Config{}, fmt.Errorf("decode HEIF primary image: %w: %s", commandErr, strings.TrimSpace(string(combined)))
+	}
+	file, err := os.Open(output)
+	if err != nil {
+		return "", image.Config{}, fmt.Errorf("open HEIF primary image: %w", err)
+	}
+	config, decodeErr := png.DecodeConfig(file)
+	if err := errors.Join(decodeErr, file.Close()); err != nil {
+		return "", image.Config{}, fmt.Errorf("read HEIF primary dimensions: %w", err)
+	}
+	return output, config, nil
+}
+
+func capturedAtFromTags(tags map[string]string) *time.Time {
+	for _, key := range []string{"creation_time", "date", "datetimeoriginal", "com.apple.quicktime.creationdate"} {
+		if value := tags[key]; value != "" {
+			for _, layout := range []string{time.RFC3339, "2006:01:02 15:04:05"} {
+				if parsed, err := time.Parse(layout, value); err == nil {
+					return &parsed
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func firstTag(tags map[string]string, keys ...string) string {

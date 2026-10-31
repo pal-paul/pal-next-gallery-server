@@ -225,6 +225,9 @@ seconds; clients may retry these temporary limits with a bounded delay.
 quota, not automatic retries. Cancel unused sessions with
 `DELETE /media/upload/{id}`; cleanup must still run after canceling the upload
 task so abandoned sessions do not keep consuming the active-upload allowance.
+Canceling a batch with `POST /media/upload-batches/{id}/cancel` also removes
+its unfinished sessions and releases their reserved storage. Cancellation can
+be retried if session cleanup fails; completed media is not removed.
 
 Stored media and unfinished uploads share atomic, per-owner quota accounting
 with Google Takeout imports. Upload reservations survive restarts and are
@@ -499,6 +502,9 @@ Add media:
 Thumbnail and metadata extraction are intentionally asynchronous. Completing
 an upload creates a PostgreSQL-backed processing job; the in-process worker
 uses FFmpeg and FFprobe and persists its progress across container restarts.
+HEIC/HEIF photos are first decoded with ImageMagick/libheif using the primary
+image only, so tiled photos are assembled correctly and monochrome depth or
+gain-map images are not mistaken for the photo. The original file is unchanged.
 Failed work is requeued with a bounded backoff, and jobs left in `processing`
 for 15 minutes are eligible to be reclaimed after a worker interruption.
 The gallery remains responsible for access and presentation, while processing
