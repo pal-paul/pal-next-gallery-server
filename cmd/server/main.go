@@ -193,7 +193,7 @@ func run() error {
 	processingService := processing.New(database, envVar.MediaDir)
 	publicShareService := publicshare.New(database, envVar.MediaDir)
 	trashService := trash.New(database, envVar.MediaDir)
-	batchService := batch.New(database)
+	batchService := batch.New(database, uploaderService)
 	transferService := transfer.New(database)
 	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize, envVar.MinDiskFree)
 	if err != nil {

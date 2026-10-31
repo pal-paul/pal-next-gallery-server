@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
   server:
-    image: ghcr.io/pal-paul/pal-next-gallery-server:1.4.0
+    image: ghcr.io/pal-paul/pal-next-gallery-server:1.6.0
     environment:
       ENV_GIN_MODE: release
       ENV_PORT: "8081"
@@ -96,7 +96,7 @@ services:
     restart: unless-stopped
 
   moments-worker:
-    image: ghcr.io/pal-paul/pal-next-gallery-server:1.4.0
+    image: ghcr.io/pal-paul/pal-next-gallery-server:1.6.0
     entrypoint: ["/app/moments-worker"]
     environment:
       ENV_DATABASE_URL: "postgres://<change-me>:<change-me>@postgres:5432/uploader?sslmode=disable"
