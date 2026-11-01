@@ -21,7 +21,7 @@ import { StorageDashboard } from './components/StorageDashboard'
 import { albumSeed, mediaSeed } from './data/gallerySeed'
 import './App.css'
 
-type Props = { onLogout: () => Promise<void> }
+type Props = { onLogout: () => Promise<void>; applianceOwner?: boolean }
 
 const sharingErrorMessage = (error: unknown) => {
   if (!(error instanceof ApiError)) return 'Unable to share the library. Please try again.'
@@ -32,7 +32,7 @@ const sharingErrorMessage = (error: unknown) => {
   return 'Unable to share the library. Please try again.'
 }
 
-function App({ onLogout }: Props) {
+function App({ onLogout, applianceOwner = false }: Props) {
   const [view, setView] = useState<LibraryView>('albums')
   const [albums, setAlbums] = useState<Album[]>(() => demoMode ? structuredClone(albumSeed) : [])
   const [media, setMedia] = useState<MediaItem[]>(() => demoMode ? structuredClone(mediaSeed) : [])
@@ -465,7 +465,7 @@ function App({ onLogout }: Props) {
 
   return (
     <div className="app-shell">
-      <AppHeader view={view} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMoments={() => void showMoments()} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onCreateMoment={() => { setView('moments'); setActiveMoment(undefined); setCreatingMoment(true) }} onFindMoments={() => void generateMoments()} aiEnabled={aiEnabled} generatingMoments={generatingMoments} canUpload={connected && !demoMode} onUploaded={loadAllMedia} onImported={refreshAfterImport} onLogout={onLogout} />
+      <AppHeader view={view} applianceOwner={applianceOwner} showingAlbum={Boolean(activeAlbum)} albumTitle={activeAlbum?.title} onShowAlbums={showAlbums} onShowMoments={() => void showMoments()} onShowMedia={showAllMedia} onShowFavorites={showFavorites} onShowTrash={showTrash} onShowMap={showMap} onShowStorage={() => void showStorage()} onCreateAlbum={() => setShowCreate(true)} onCreateMoment={() => { setView('moments'); setActiveMoment(undefined); setCreatingMoment(true) }} onFindMoments={() => void generateMoments()} aiEnabled={aiEnabled} generatingMoments={generatingMoments} canUpload={connected && !demoMode} onUploaded={loadAllMedia} onImported={refreshAfterImport} onLogout={onLogout} />
       <main>
         {view !== 'moments' && <PageHeading view={view} album={activeAlbum} albumCount={albums.length} mediaCount={view === 'favorites' || view === 'trash' ? visibleMedia.length : media.length} favoriteCount={media.filter((item) => item.favorite && !item.deletedAt).length} onBack={showAlbums} onEdit={() => openEditAlbum()} onAddImages={() => openEditAlbum(true)} />}
         {!['storage', 'moments'].includes(view) && !activeAlbum && <LibraryToolbar view={view} query={query} filter={filter} sort={sort} grouping={grouping} onQueryChange={setQuery} onFilterChange={setFilter} onSortChange={setSort} onGroupingChange={setGrouping} />}

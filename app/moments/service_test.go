@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"pal-next-gallery-server/app/auth"
+	"pal-next-gallery-server/app/gallery"
 
 	"github.com/gin-gonic/gin"
 )
@@ -72,10 +73,10 @@ func (enricher *testTwoStageEnricher) MergeClusters(_ context.Context, clusters 
 func (repository *testRepository) ListMomentOwners(context.Context) ([]string, error) {
 	return repository.owners, nil
 }
-func (repository *testRepository) ListMoments(context.Context, string) ([]Moment, error) {
+func (repository *testRepository) ListMoments(context.Context, string, ...gallery.Page) ([]Moment, error) {
 	return repository.created, nil
 }
-func (repository *testRepository) GetMoment(_ context.Context, id, ownerID string) (Moment, error) {
+func (repository *testRepository) GetMoment(_ context.Context, id, ownerID string, _ ...gallery.Page) (Moment, error) {
 	for _, moment := range repository.created {
 		if moment.ID == id && moment.OwnerID == ownerID {
 			return moment, nil

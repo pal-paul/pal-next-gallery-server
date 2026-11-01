@@ -31,10 +31,11 @@ const listAlbumsQuery = `SELECT a.id, a.owner_id, a.title, a.description, a.auto
 				AND (search_m.owner_id = $1 OR search_s.user_id IS NOT NULL)
 				AND search_m.filename ILIKE '%' || $2 || '%'))
 		GROUP BY a.id
-		ORDER BY a.position ASC NULLS LAST, a.created_at DESC`
+		ORDER BY a.position ASC NULLS LAST, a.created_at DESC, a.id`
 
-func (store *Postgres) ListAlbums(ctx context.Context, userID, search string) ([]gallery.Album, error) {
-	rows, err := store.pool.Query(ctx, listAlbumsQuery, userID, strings.TrimSpace(search))
+func (store *Postgres) ListAlbums(ctx context.Context, userID, search string, pages ...gallery.Page) ([]gallery.Album, error) {
+	limit, offset := gallery.PageBounds(pages...)
+	rows, err := store.pool.Query(ctx, listAlbumsQuery+` LIMIT $3 OFFSET $4`, userID, strings.TrimSpace(search), limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +57,7 @@ func (store *Postgres) CreateAlbum(ctx context.Context, album gallery.Album) err
 	return err
 }
 
-func (store *Postgres) GetAlbum(ctx context.Context, albumID, userID string) (gallery.Album, error) {
+func (store *Postgres) GetAlbum(ctx context.Context, albumID, userID string, pages ...gallery.Page) (gallery.Album, error) {
 	var album gallery.Album
 	err := store.pool.QueryRow(ctx, `SELECT id, owner_id, title, description, automatic, created_at, COALESCE(cover_media_id, '')
 		FROM albums WHERE id = $1 AND owner_id = $2`, albumID, userID).Scan(
@@ -64,31 +65,63 @@ func (store *Postgres) GetAlbum(ctx context.Context, albumID, userID string) (ga
 	if err != nil {
 		return album, galleryError(err)
 	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM album_media am
+		JOIN media_uploads m ON m.upload_id = am.upload_id
+		WHERE am.album_id = $1 AND m.deleted_at IS NULL AND (m.owner_id = $2 OR EXISTS (
+			SELECT 1 FROM user_media_shares s WHERE s.owner_id = m.owner_id AND s.user_id = $2))`, albumID, userID).Scan(&album.ItemCount); err != nil {
+		return album, err
+	}
+	limit, offset := gallery.PageBounds(pages...)
 	rows, err := store.pool.Query(ctx, mediaSelect+`
 		JOIN album_media am ON am.upload_id = m.upload_id
 		LEFT JOIN user_media_shares s ON s.owner_id = m.owner_id AND s.user_id = $2
 		LEFT JOIN media_preferences p ON p.upload_id = m.upload_id AND p.user_id = $2
 		WHERE am.album_id = $1 AND m.deleted_at IS NULL AND (m.owner_id = $2 OR s.user_id IS NOT NULL)
-		ORDER BY COALESCE(exif.captured_at, m.created_at) DESC`, albumID, userID)
+		ORDER BY COALESCE(exif.captured_at, m.created_at) DESC, m.upload_id LIMIT $3 OFFSET $4`, albumID, userID, limit, offset)
 	if err != nil {
 		return album, err
 	}
 	defer rows.Close()
 	album.Media, err = scanGalleryMedia(rows)
-	album.ItemCount = int64(len(album.Media))
 	return album, err
 }
 
 func (store *Postgres) UpdateAlbum(ctx context.Context, albumID, userID, title, description string) error {
 	result, err := store.pool.Exec(ctx, `UPDATE albums SET title = $3, description = $4
-		WHERE id = $1 AND owner_id = $2 AND automatic = FALSE`, albumID, userID, title, description)
+		WHERE id = $1 AND owner_id = $2`, albumID, userID, title, description)
 	return changed(result.RowsAffected(), err)
 }
 
 func (store *Postgres) DeleteAlbum(ctx context.Context, albumID, userID string) error {
-	result, err := store.pool.Exec(ctx, `DELETE FROM albums
-		WHERE id = $1 AND owner_id = $2 AND automatic = FALSE`, albumID, userID)
-	return changed(result.RowsAffected(), err)
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	var automatic bool
+	var key string
+	if err := transaction.QueryRow(ctx, `SELECT automatic, COALESCE(auto_key, '') FROM albums
+		WHERE id = $1 AND owner_id = $2`, albumID, userID).Scan(&automatic, &key); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return gallery.ErrNotFound
+		}
+		return err
+	}
+	if automatic && key != "" {
+		baseKey, _, _ := strings.Cut(key, ":part:")
+		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userID+":"+baseKey); err != nil {
+			return err
+		}
+		if _, err := transaction.Exec(ctx, `INSERT INTO deleted_automatic_albums (owner_id, auto_key)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, key); err != nil {
+			return err
+		}
+	}
+	result, err := transaction.Exec(ctx, `DELETE FROM albums WHERE id = $1 AND owner_id = $2`, albumID, userID)
+	if err := changed(result.RowsAffected(), err); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }
 
 func (store *Postgres) SetAlbumOrder(ctx context.Context, userID string, albumIDs []string) error {
@@ -189,6 +222,7 @@ const mediaSelect = `SELECT m.upload_id, m.owner_id, owner.username,
 	LEFT JOIN media_exif exif ON exif.upload_id = m.upload_id `
 
 func (store *Postgres) ListMedia(ctx context.Context, userID string, filter gallery.MediaFilter) ([]gallery.Media, error) {
+	limit, offset := gallery.PageBounds(filter.Page)
 	rows, err := store.pool.Query(ctx, mediaSelect+`
 		LEFT JOIN user_media_shares s ON s.owner_id = m.owner_id AND s.user_id = $2
 		LEFT JOIN media_preferences p ON p.upload_id = m.upload_id AND p.user_id = $2
@@ -196,6 +230,7 @@ func (store *Postgres) ListMedia(ctx context.Context, userID string, filter gall
 			(NOT $3 AND m.deleted_at IS NULL AND (m.owner_id = $2 OR s.user_id IS NOT NULL)))
 		AND ($4 = '' OR CASE WHEN m.mime_type LIKE 'video/%' THEN 'video' ELSE 'photo' END = $4)
 		AND ($1 = '' OR m.filename ILIKE '%' || $1 || '%' OR m.mime_type ILIKE '%' || $1 || '%')
+		AND (NOT $13 OR COALESCE(p.favorite, FALSE))
 		AND ($6::timestamptz IS NULL OR exif.captured_at >= $6)
 		AND ($7::timestamptz IS NULL OR exif.captured_at <= $7)
 		AND ($8::double precision IS NULL OR $9::double precision IS NULL OR $10::double precision IS NULL OR
@@ -204,9 +239,10 @@ func (store *Postgres) ListMedia(ctx context.Context, userID string, filter gall
 			cos(radians(exif.longitude) - radians($9)) + sin(radians($8)) * sin(radians(exif.latitude)))) <= $10))
 		ORDER BY CASE WHEN $5 = 'oldest' THEN COALESCE(exif.captured_at, m.created_at) END ASC,
 			CASE WHEN $5 = 'title' THEN lower(m.filename) END ASC,
-			CASE WHEN $5 NOT IN ('oldest', 'title') THEN COALESCE(exif.captured_at, m.created_at) END DESC`,
+			CASE WHEN $5 NOT IN ('oldest', 'title') THEN COALESCE(exif.captured_at, m.created_at) END DESC,
+			m.upload_id LIMIT $11 OFFSET $12`,
 		strings.TrimSpace(filter.Search), userID, filter.Trash, filter.Kind, filter.Sort,
-		filter.CapturedAfter, filter.CapturedBefore, filter.Latitude, filter.Longitude, filter.RadiusKM)
+		filter.CapturedAfter, filter.CapturedBefore, filter.Latitude, filter.Longitude, filter.RadiusKM, limit, offset, filter.Favorites)
 	if err != nil {
 		return nil, err
 	}

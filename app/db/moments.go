@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"pal-next-gallery-server/app/gallery"
 	"pal-next-gallery-server/app/moments"
 
 	"github.com/jackc/pgx/v5"
@@ -38,14 +39,15 @@ func (store *Postgres) ListMomentOwners(ctx context.Context) ([]string, error) {
 	return ownerIDs, rows.Err()
 }
 
-func (store *Postgres) ListMoments(ctx context.Context, ownerID string) ([]moments.Moment, error) {
+func (store *Postgres) ListMoments(ctx context.Context, ownerID string, pages ...gallery.Page) ([]moments.Moment, error) {
+	limit, offset := gallery.PageBounds(pages...)
 	rows, err := store.pool.Query(ctx, momentSelect+`
 		FROM moments moment
 		WHERE moment.owner_id = $1 AND EXISTS (SELECT 1 FROM moment_media member
 			JOIN media_uploads media ON media.upload_id = member.upload_id
 			WHERE member.moment_id = moment.id AND media.deleted_at IS NULL AND (media.owner_id = moment.owner_id OR EXISTS (
 				SELECT 1 FROM user_media_shares share WHERE share.owner_id = media.owner_id AND share.user_id = moment.owner_id)))
-		ORDER BY moment.start_time DESC, moment.id`, ownerID)
+		ORDER BY moment.start_time DESC, moment.id LIMIT $2 OFFSET $3`, ownerID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -61,12 +63,13 @@ func (store *Postgres) ListMoments(ctx context.Context, ownerID string) ([]momen
 	return items, rows.Err()
 }
 
-func (store *Postgres) GetMoment(ctx context.Context, momentID, ownerID string) (moments.Moment, error) {
+func (store *Postgres) GetMoment(ctx context.Context, momentID, ownerID string, pages ...gallery.Page) (moments.Moment, error) {
 	item, err := scanMoment(store.pool.QueryRow(ctx, momentSelect+`
 		FROM moments moment WHERE moment.id = $1 AND moment.owner_id = $2`, momentID, ownerID))
 	if err != nil {
 		return item, momentError(err)
 	}
+	limit, offset := gallery.PageBounds(pages...)
 	rows, err := store.pool.Query(ctx, `SELECT media.upload_id, media.filename,
 		CASE WHEN media.thumbnail_path IS NULL THEN '' ELSE '/media/files/' || media.upload_id || '/thumbnail' END,
 		COALESCE(exif.captured_at, media.created_at), member.is_representative
@@ -76,7 +79,7 @@ func (store *Postgres) GetMoment(ctx context.Context, momentID, ownerID string) 
 		WHERE member.moment_id = $1 AND media.deleted_at IS NULL
 		AND (media.owner_id = $2 OR EXISTS (SELECT 1 FROM user_media_shares share
 			WHERE share.owner_id = media.owner_id AND share.user_id = $2))
-		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id`, momentID, ownerID)
+		ORDER BY COALESCE(exif.captured_at, media.created_at), media.upload_id LIMIT $3 OFFSET $4`, momentID, ownerID, limit, offset)
 	if err != nil {
 		return item, err
 	}

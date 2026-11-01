@@ -164,6 +164,14 @@ func reconcileAutomaticAlbumParts(ctx context.Context, transaction pgx.Tx, owner
 	for index, mediaPart := range partitionMediaIDs(mediaIDs, maxMedia) {
 		part := index + 1
 		key, title := automaticAlbumPart(baseKey, baseTitle, part)
+		var deleted bool
+		if err := transaction.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM deleted_automatic_albums
+			WHERE owner_id = $1 AND auto_key = $2)`, ownerID, key).Scan(&deleted); err != nil {
+			return err
+		}
+		if deleted {
+			continue
+		}
 		albumID := firstAlbumID
 		if part > 1 {
 			albumID = uuid.NewString()
@@ -172,7 +180,7 @@ func reconcileAutomaticAlbumParts(ctx context.Context, transaction pgx.Tx, owner
 			(id, owner_id, title, description, automatic, auto_key)
 			VALUES ($1, $2, $3, '', TRUE, $4)
 			ON CONFLICT (owner_id, auto_key) WHERE auto_key IS NOT NULL
-			DO UPDATE SET title = EXCLUDED.title
+			DO UPDATE SET auto_key = EXCLUDED.auto_key
 			RETURNING id`, albumID, ownerID, title, key).Scan(&albumID); err != nil {
 			return err
 		}

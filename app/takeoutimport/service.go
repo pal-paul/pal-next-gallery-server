@@ -51,6 +51,13 @@ type Service struct {
 	maxStorageSize int64
 	minDiskFree    int64
 	diskFree       func(string) (int64, error)
+	applianceMode  bool
+}
+
+type Option func(*Service)
+
+func WithApplianceMode(enabled bool) Option {
+	return func(service *Service) { service.applianceMode = enabled }
 }
 
 type Result struct {
@@ -68,7 +75,7 @@ type sidecar struct {
 	} `json:"photoTakenTime"`
 }
 
-func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStorageSize, minDiskFree int64) (*Service, error) {
+func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStorageSize, minDiskFree int64, options ...Option) (*Service, error) {
 	if repository == nil {
 		return nil, errors.New("takeout repository is required")
 	}
@@ -87,11 +94,15 @@ func New(repository Repository, tmpDir, mediaDir string, maxArchiveSize, maxStor
 	if err := os.MkdirAll(mediaDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create media directory: %w", err)
 	}
-	return &Service{
+	service := &Service{
 		repository: repository, tmpDir: filepath.Clean(tmpDir), mediaDir: filepath.Clean(mediaDir),
 		maxArchiveSize: maxArchiveSize, maxStorageSize: maxStorageSize,
 		minDiskFree: minDiskFree, diskFree: uploader.AvailableDiskBytes,
-	}, nil
+	}
+	for _, option := range options {
+		option(service)
+	}
+	return service, nil
 }
 
 func RegisterRoutes(router gin.IRoutes, service *Service) {
@@ -100,8 +111,9 @@ func RegisterRoutes(router gin.IRoutes, service *Service) {
 
 func (service *Service) Import(ctx *gin.Context) {
 	user, ok := currentUser(ctx)
-	if !ok || user.Role != "user" || strings.TrimSpace(user.UploadFolder) == "" {
-		ctx.JSON(http.StatusForbidden, gin.H{"error": "Takeout imports require a regular user with an upload folder"})
+	canImport := user.Role == "user" || (service.applianceMode && user.Role == "admin")
+	if !ok || !canImport || strings.TrimSpace(user.UploadFolder) == "" {
+		ctx.JSON(http.StatusForbidden, gin.H{"error": "Takeout imports require a photo-library user with an upload folder"})
 		return
 	}
 	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, service.maxArchiveSize+(1<<20))

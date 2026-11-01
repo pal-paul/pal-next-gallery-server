@@ -48,6 +48,7 @@ type Environment struct {
 	AdminUsername          string `env:"ENV_ADMIN_USERNAME"`
 	AdminPassword          string `env:"ENV_ADMIN_PASSWORD"`
 	AdminConfig            string `env:"ENV_ADMIN_CONFIG,default=YES"`
+	ApplianceMode          string `env:"ENV_APPLIANCE_MODE,default=NO"`
 	AIFeature              string `env:"ENV_AI_FEATURE,default=YES"`
 	WebDir                 string `env:"ENV_WEB_DIR,default=./web/dist"`
 	MediaDir               string `env:"ENV_MEDIA_DIR,default=./vol/medias"`
@@ -137,7 +138,11 @@ func run() error {
 		return err
 	}
 
-	authService := auth.NewService(database, envVar.Issuer, auth.WithTrustedProxies(trustedProxies))
+	applianceMode, err := parseYesNo("ENV_APPLIANCE_MODE", envVar.ApplianceMode)
+	if err != nil {
+		return err
+	}
+	authService := auth.NewService(database, envVar.Issuer, auth.WithTrustedProxies(trustedProxies), auth.WithApplianceMode(applianceMode))
 	adminConfigEnabled, err := parseYesNo("ENV_ADMIN_CONFIG", envVar.AdminConfig)
 	if err != nil {
 		return err
@@ -150,7 +155,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	setupService, err := setupapp.NewService(database, envVar.AdminUsername, envVar.AdminPassword, true)
+	setupService, err := setupapp.NewService(database, envVar.AdminUsername, envVar.AdminPassword, true, setupapp.WithApplianceMode(applianceMode))
 	if err != nil {
 		return fmt.Errorf("create setup service: %w", err)
 	}
@@ -175,11 +180,12 @@ func run() error {
 		uploader.WithMinDiskFree(envVar.MinDiskFree),
 		uploader.WithMaxActiveUploads(envVar.MaxActive),
 		uploader.WithMediaRepository(database),
+		uploader.WithApplianceMode(applianceMode),
 	)
 	if err != nil {
 		return fmt.Errorf("create uploader service: %w", err)
 	}
-	userService := userapp.NewService(database, envVar.Issuer, envVar.MediaDir)
+	userService := userapp.NewService(database, envVar.Issuer, envVar.MediaDir, userapp.WithApplianceMode(applianceMode))
 	galleryService := gallery.NewService(database, envVar.MediaDir)
 	momentOptions, err := configuredMomentOptions(aiEnabled)
 	if err != nil {
@@ -195,7 +201,8 @@ func run() error {
 	trashService := trash.New(database, envVar.MediaDir)
 	batchService := batch.New(database, uploaderService)
 	transferService := transfer.New(database)
-	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize, envVar.MinDiskFree)
+	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize, envVar.MinDiskFree,
+		takeoutimport.WithApplianceMode(applianceMode))
 	if err != nil {
 		return fmt.Errorf("create Google Takeout import service: %w", err)
 	}

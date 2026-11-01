@@ -22,6 +22,28 @@ type memoryRepository struct {
 	unsharedUsername string
 }
 
+func TestAppliancePhotoAccessPreservesRoleBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, enabled := range []bool{false, true} {
+		service := NewService(&memoryRepository{}, "PAL Test", t.TempDir(), WithApplianceMode(enabled))
+		for _, actorRole := range []string{"user", "admin", "unknown"} {
+			for _, requiredRole := range []string{"user", "admin"} {
+				response := httptest.NewRecorder()
+				context, _ := gin.CreateTestContext(response)
+				context.Set(auth.UserContextKey, auth.User{ID: "owner-id", Role: actorRole})
+				service.RequireRole(requiredRole)(context)
+				allowed := actorRole == requiredRole || (enabled && actorRole == "admin" && requiredRole == "user")
+				if context.IsAborted() == allowed {
+					t.Fatalf("role guard: appliance=%v actor=%s required=%s", enabled, actorRole, requiredRole)
+				}
+			}
+		}
+		if err := service.SetUploadFolder(context.Background(), "owner-id", "admin", "../outside"); !errors.Is(err, ErrForbidden) && !errors.Is(err, ErrInvalidFolder) {
+			t.Fatal("unsafe owner upload folder accepted")
+		}
+	}
+}
+
 func (repository *memoryRepository) ResetUserPassword(_ context.Context, _ string, passwordHash string) error {
 	repository.passwordHash = passwordHash
 	return nil
@@ -103,6 +125,32 @@ func TestFolderRejectsParentTraversal(t *testing.T) {
 	err := service.SetUploadFolder(context.Background(), "id", "user", "../private")
 	if !errors.Is(err, ErrInvalidFolder) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUploadFolderPreservesModeAndRoleBoundaries(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, role := range []string{"user", "admin", "unknown"} {
+			repository := &memoryRepository{}
+			service := NewService(repository, "PAL Test", t.TempDir(), WithApplianceMode(enabled))
+			err := service.SetUploadFolder(context.Background(), "owner-id", role, " family/photos ")
+			allowed := role == "user" || (enabled && role == "admin")
+			if !allowed {
+				if !errors.Is(err, ErrForbidden) || repository.folder != "" {
+					t.Fatalf("forbidden folder write: appliance=%v role=%s folder=%q error=%v", enabled, role, repository.folder, err)
+				}
+				continue
+			}
+			if err != nil || repository.folder != "family/photos" {
+				t.Fatalf("allowed folder write: appliance=%v role=%s folder=%q error=%v", enabled, role, repository.folder, err)
+			}
+			if err := service.SetUploadFolder(context.Background(), "owner-id", role, "../outside"); !errors.Is(err, ErrInvalidFolder) {
+				t.Fatalf("unsafe folder: appliance=%v role=%s error=%v", enabled, role, err)
+			}
+			if repository.folder != "family/photos" {
+				t.Fatal("invalid folder changed the repository")
+			}
+		}
 	}
 }
 

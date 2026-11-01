@@ -29,8 +29,8 @@ func (store *Postgres) CreateInitialAdmin(ctx context.Context, account setupapp.
 		return setupapp.ErrAlreadyConfigured
 	}
 	if _, err := transaction.Exec(ctx, `INSERT INTO users
-		(id, username, password_hash, role, totp_required)
-		VALUES ($1, $2, $3, 'admin', TRUE)`, account.ID, account.Username, account.PasswordHash); err != nil {
+		(id, username, password_hash, role, totp_required, upload_folder)
+		VALUES ($1, $2, $3, 'admin', TRUE, $4)`, account.ID, account.Username, account.PasswordHash, account.UploadFolder); err != nil {
 		return err
 	}
 	return transaction.Commit(ctx)

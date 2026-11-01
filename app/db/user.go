@@ -54,9 +54,9 @@ func (store *Postgres) UpdateUserQuota(ctx context.Context, userID string, quota
 }
 
 func (store *Postgres) UpdateUserFolder(ctx context.Context, userID, folder string) error {
-	result, err := store.pool.Exec(ctx, `UPDATE users SET upload_folder = $2 WHERE id = $1 AND role = 'user'`, userID, folder)
+	result, err := store.pool.Exec(ctx, `UPDATE users SET upload_folder = $2 WHERE id = $1 AND role IN ('user', 'admin')`, userID, folder)
 	if err == nil && result.RowsAffected() == 0 {
-		return errors.New("regular user not found")
+		return errors.New("user not found")
 	}
 	return err
 }

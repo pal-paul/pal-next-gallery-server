@@ -5,12 +5,14 @@ import { demoMode } from '../api/apiClient'
 import { authApi, type LoginChallenge, type Session } from '../api/authApi'
 import { setupApi } from '../api/setupApi'
 
-type Props = { children: (logout: () => Promise<void>) => ReactNode }
+type Props = { children: (logout: () => Promise<void>, applianceOwner: boolean) => ReactNode }
 
 export function AuthGate({ children }: Props) {
   const [checking, setChecking] = useState(!demoMode)
   const [setupRequired, setSetupRequired] = useState(false)
   const [role, setRole] = useState<Session['role'] | undefined>(demoMode ? 'user' : undefined)
+  const [applianceOwner, setApplianceOwner] = useState(false)
+  const acceptSession = (session: Session) => { setApplianceOwner(session.applianceOwner === true); setRole(session.role) }
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
@@ -28,13 +30,13 @@ export function AuthGate({ children }: Props) {
     if (demoMode) return
     setupApi.status().then(async ({ required }) => {
       setSetupRequired(required)
-      if (!required) setRole((await authApi.session()).role)
+      if (!required) acceptSession(await authApi.session())
     }).catch(() => setRole(undefined)).finally(() => setChecking(false))
   }, [])
 
   useEffect(() => {
-    if (role === 'admin') window.location.replace('/admin/config')
-  }, [role])
+    if (role === 'admin' && !applianceOwner) window.location.replace('/admin/config')
+  }, [role, applianceOwner])
 
   useEffect(() => {
     if (!challenge?.provisioningUri) return
@@ -48,7 +50,7 @@ export function AuthGate({ children }: Props) {
     setQrCode('')
     try {
       const result = await authApi.login(username, password)
-      if (result.authenticated) setRole((await authApi.session()).role)
+      if (result.authenticated) acceptSession(await authApi.session())
       else setChallenge(result)
       setPassword('')
     } catch {
@@ -84,7 +86,7 @@ export function AuthGate({ children }: Props) {
     setError('')
     try {
       await authApi.verify(challenge.challengeToken, code)
-      setRole((await authApi.session()).role)
+      acceptSession(await authApi.session())
     } catch {
       setError('That authentication code is invalid or expired.')
     } finally {
@@ -96,12 +98,13 @@ export function AuthGate({ children }: Props) {
     if (demoMode) return
     await authApi.logout()
     setRole(undefined)
+    setApplianceOwner(false)
     setChallenge(undefined)
     setCode('')
   }
 
-  if (checking || role === 'admin') return <div className="auth-loading"><LoaderCircle className="spin" size={26} /><span>{role === 'admin' ? 'Opening user configuration' : 'Opening gallery'}</span></div>
-  if (role === 'user') return children(logout)
+  if (checking || (role === 'admin' && !applianceOwner)) return <div className="auth-loading"><LoaderCircle className="spin" size={26} /><span>{role === 'admin' ? 'Opening user configuration' : 'Opening gallery'}</span></div>
+  if (role === 'user' || (role === 'admin' && applianceOwner)) return children(logout, applianceOwner)
 
   if (setupRequired) return (
     <main className="auth-page">

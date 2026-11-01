@@ -22,7 +22,7 @@ import (
 func (service *Service) RequireRole(role string) gin.HandlerFunc {
 	return func(context *gin.Context) {
 		identity, ok := currentUser(context)
-		if !ok || identity.Role != role {
+		if !ok || (identity.Role != role && (role != "user" || !service.canUsePhotos(identity.Role))) {
 			context.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			return
 		}

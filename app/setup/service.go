@@ -24,6 +24,7 @@ type Account struct {
 	ID           string
 	Username     string
 	PasswordHash string
+	UploadFolder string
 }
 
 type Repository interface {
@@ -36,17 +37,28 @@ type Service struct {
 	bootstrapUsername string
 	bootstrapPassword string
 	frontendEnabled   bool
+	applianceMode     bool
 }
 
-func NewService(repository Repository, bootstrapUsername, bootstrapPassword string, frontendEnabled bool) (*Service, error) {
+type Option func(*Service)
+
+func WithApplianceMode(enabled bool) Option {
+	return func(service *Service) { service.applianceMode = enabled }
+}
+
+func NewService(repository Repository, bootstrapUsername, bootstrapPassword string, frontendEnabled bool, options ...Option) (*Service, error) {
 	bootstrapUsername = strings.TrimSpace(bootstrapUsername)
 	if bootstrapUsername == "" || len(bootstrapPassword) < 12 {
 		return nil, errors.New("bootstrap username and a password of at least 12 characters are required")
 	}
-	return &Service{
+	service := &Service{
 		repository: repository, bootstrapUsername: bootstrapUsername,
 		bootstrapPassword: bootstrapPassword, frontendEnabled: frontendEnabled,
-	}, nil
+	}
+	for _, option := range options {
+		option(service)
+	}
+	return service, nil
 }
 
 func (service *Service) CreateAdmin(ctx context.Context, bootstrapUsername, bootstrapPassword, username, password, confirmation string) error {
@@ -72,9 +84,13 @@ func (service *Service) CreateAdmin(ctx context.Context, bootstrapUsername, boot
 	if err != nil {
 		return fmt.Errorf("hash admin password: %w", err)
 	}
-	return service.repository.CreateInitialAdmin(ctx, Account{
+	account := Account{
 		ID: uuid.NewString(), Username: username, PasswordHash: string(hash),
-	})
+	}
+	if service.applianceMode {
+		account.UploadFolder = "users/" + account.ID
+	}
+	return service.repository.CreateInitialAdmin(ctx, account)
 }
 
 func (service *Service) RegisterRoutes(router gin.IRoutes) {

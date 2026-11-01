@@ -14,15 +14,246 @@ import (
 	"time"
 
 	"pal-next-gallery-server/app/auth"
+	"pal-next-gallery-server/app/gallery"
 	"pal-next-gallery-server/app/moments"
 	"pal-next-gallery-server/app/processing"
 	"pal-next-gallery-server/app/uploader"
+	userapp "pal-next-gallery-server/app/user"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestPostgresUploadFolderRoleBoundaries(t *testing.T) {
+	store, ownerID, _ := momentTestStore(t, 0)
+	ctx := context.Background()
+	for _, enabled := range []bool{false, true} {
+		for _, role := range []string{"user", "admin"} {
+			if _, err := store.pool.Exec(ctx, `UPDATE users SET role = $2, upload_folder = 'original' WHERE id = $1`, ownerID, role); err != nil {
+				t.Fatal(err)
+			}
+			service := userapp.NewService(store, "PAL Test", t.TempDir(), userapp.WithApplianceMode(enabled))
+			err := service.SetUploadFolder(ctx, ownerID, role, "family/photos")
+			allowed := role == "user" || enabled
+			expected := "original"
+			if allowed {
+				if err != nil {
+					t.Fatalf("allowed write: appliance=%v role=%s error=%v", enabled, role, err)
+				}
+				expected = "family/photos"
+			} else if !errors.Is(err, userapp.ErrForbidden) {
+				t.Fatalf("standalone admin write: %v", err)
+			}
+			var folder string
+			if err := store.pool.QueryRow(ctx, `SELECT upload_folder FROM users WHERE id = $1`, ownerID).Scan(&folder); err != nil || folder != expected {
+				t.Fatalf("persisted folder: appliance=%v role=%s got=%q want=%q error=%v", enabled, role, folder, expected, err)
+			}
+		}
+	}
+	if err := store.UpdateUserFolder(ctx, uuid.NewString(), "family/photos"); err == nil {
+		t.Fatal("missing user folder update succeeded")
+	}
+}
+
+func TestPostgresGalleryPagination(t *testing.T) {
+	store, ownerID, candidates := momentTestStore(t, 130)
+	ctx := context.Background()
+	all, err := store.ListMedia(ctx, ownerID, gallery.MediaFilter{})
+	if err != nil || len(all) != 130 {
+		t.Fatalf("legacy media: count=%d error=%v", len(all), err)
+	}
+	seen := make(map[string]bool)
+	for offset := 0; offset < 130; offset += 60 {
+		page, err := store.ListMedia(ctx, ownerID, gallery.MediaFilter{Page: gallery.Page{Limit: 60, Offset: offset}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for index, media := range page {
+			if seen[media.ID] || media.ID != all[offset+index].ID {
+				t.Fatalf("unstable page at %d: %s", offset+index, media.ID)
+			}
+			seen[media.ID] = true
+		}
+	}
+	if len(seen) != 130 {
+		t.Fatalf("loaded %d media", len(seen))
+	}
+	if err := store.SetFavorite(ctx, all[100].ID, ownerID, true); err != nil {
+		t.Fatal(err)
+	}
+	favorites, err := store.ListMedia(ctx, ownerID, gallery.MediaFilter{Favorites: true, Page: gallery.Page{Limit: 60}})
+	if err != nil || len(favorites) != 1 || favorites[0].ID != all[100].ID {
+		t.Fatalf("favorites: %+v error=%v", favorites, err)
+	}
+	album := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Manual album"}
+	if err := store.CreateAlbum(ctx, album); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(candidates))
+	for index, candidate := range candidates {
+		ids[index] = candidate.ID
+	}
+	if err := store.AddAlbumMedia(ctx, album.ID, ownerID, ids); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.GetAlbum(ctx, album.ID, ownerID, gallery.Page{Limit: 60, Offset: 60})
+	if err != nil || detail.ItemCount != 130 || len(detail.Media) != 60 {
+		t.Fatalf("album detail: total=%d page=%d error=%v", detail.ItemCount, len(detail.Media), err)
+	}
+	for _, media := range detail.Media {
+		if media.ID != all[60].ID && !seen[media.ID] {
+			t.Fatalf("unexpected album media %s", media.ID)
+		}
+	}
+	for index := 0; index < 64; index++ {
+		if err := store.CreateAlbum(ctx, gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: fmt.Sprintf("Album %02d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	albums, err := store.ListAlbums(ctx, ownerID, "", gallery.Page{Limit: 60})
+	if err != nil || len(albums) != 60 {
+		t.Fatalf("album page: %d error=%v", len(albums), err)
+	}
+	albums, err = store.ListAlbums(ctx, ownerID, "", gallery.Page{Limit: 60, Offset: 60})
+	if err != nil || len(albums) != 5 {
+		t.Fatalf("last album page: %d error=%v", len(albums), err)
+	}
+	moment := moments.Moment{ID: uuid.NewString(), OwnerID: ownerID, Title: "Manual moment", Status: "published"}
+	if err := store.CreateMoment(ctx, moment, ids); err != nil {
+		t.Fatal(err)
+	}
+	momentDetail, err := store.GetMoment(ctx, moment.ID, ownerID, gallery.Page{Limit: 60, Offset: 60})
+	if err != nil || momentDetail.ImageCount != 130 || len(momentDetail.Media) != 60 {
+		t.Fatalf("moment detail: total=%d page=%d error=%v", momentDetail.ImageCount, len(momentDetail.Media), err)
+	}
+	items, err := store.ListMoments(ctx, ownerID, gallery.Page{Limit: 1})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("moment page: %d error=%v", len(items), err)
+	}
+	items, err = store.ListMoments(ctx, ownerID, gallery.Page{Limit: 1, Offset: 1})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("last moment page: %d error=%v", len(items), err)
+	}
+}
+
+func TestPostgresAutomaticAlbumMetadataAndCover(t *testing.T) {
+	store, ownerID, candidates := momentTestStore(t, 3)
+	ctx := context.Background()
+	album := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Generated title"}
+	if err := store.CreateAlbum(ctx, album); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{candidates[0].ID, candidates[1].ID}
+	if err := store.AddAlbumMedia(ctx, album.ID, ownerID, ids); err != nil {
+		t.Fatal(err)
+	}
+	key := "metadata-test"
+	if _, err := store.pool.Exec(ctx, `UPDATE albums SET automatic = TRUE, auto_key = $2 WHERE id = $1`, album.ID, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateAlbum(ctx, album.ID, uuid.NewString(), "Not owned", "Rejected"); err == nil {
+		t.Fatal("non-owner metadata update succeeded")
+	}
+	if err := store.UpdateAlbum(ctx, album.ID, ownerID, "My title", "My description"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAlbumCover(ctx, album.ID, ownerID, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAlbum(ctx, album.ID, uuid.NewString()); err == nil {
+		t.Fatal("non-owner album deletion succeeded")
+	}
+	if err := store.RemoveAlbumMedia(ctx, album.ID, ownerID, ids[0]); err == nil {
+		t.Fatal("automatic membership removal succeeded")
+	}
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	if err := reconcileAutomaticAlbumParts(ctx, transaction, ownerID, key, "Generated replacement", album.ID, ids, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.GetAlbum(ctx, album.ID, ownerID, gallery.Page{Limit: 1})
+	if err != nil || detail.Title != "My title" || detail.Description != "My description" || detail.CoverMediaID != ids[1] || !detail.Automatic || detail.ItemCount != 2 {
+		t.Fatalf("automatic album metadata/cover changed: %+v error=%v", detail, err)
+	}
+	albums, err := store.ListAlbums(ctx, ownerID, "")
+	if err != nil || len(albums) != 1 || albums[0].CoverMediaID != detail.CoverMediaID {
+		t.Fatalf("list/detail cover mismatch: %+v error=%v", albums, err)
+	}
+	if err := store.DeleteAlbum(ctx, album.ID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetAlbum(ctx, album.ID, ownerID); !errors.Is(err, gallery.ErrNotFound) {
+		t.Fatalf("deleted album remains accessible: %v", err)
+	}
+	transaction, err = store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	if err := reconcileAutomaticAlbumParts(ctx, transaction, ownerID, key, "Generated replacement", uuid.NewString(), ids, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	albums, err = store.ListAlbums(ctx, ownerID, "")
+	if err != nil || len(albums) != 0 {
+		t.Fatalf("deleted automatic album returned: %+v error=%v", albums, err)
+	}
+	partIDs := []string{ids[0], ids[1], candidates[2].ID}
+	for attempt := 0; attempt < 2; attempt++ {
+		partitionTransaction, err := store.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = partitionTransaction.Rollback(ctx) }()
+		if err := reconcileAutomaticAlbumParts(ctx, partitionTransaction, ownerID, key, "Generated replacement", uuid.NewString(), partIDs, 2); err != nil {
+			t.Fatal(err)
+		}
+		if err := partitionTransaction.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		albums, err = store.ListAlbums(ctx, ownerID, "")
+		if err != nil || len(albums) != 1-attempt {
+			t.Fatalf("automatic part suppression failed: %+v error=%v", albums, err)
+		}
+		if attempt == 0 {
+			if albums[0].ItemCount != 1 {
+				t.Fatalf("unrelated automatic part changed: %+v", albums[0])
+			}
+			if err := store.DeleteAlbum(ctx, albums[0].ID, ownerID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var remaining int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM media_uploads WHERE upload_id = ANY($1)
+		AND deleted_at IS NULL`, ids).Scan(&remaining); err != nil || remaining != len(ids) {
+		t.Fatalf("album deletion changed library media: count=%d error=%v", remaining, err)
+	}
+	manual := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Manual album"}
+	if err := store.CreateAlbum(ctx, manual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddAlbumMedia(ctx, manual.ID, ownerID, ids); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAlbum(ctx, manual.ID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM media_uploads WHERE upload_id = ANY($1)
+		AND deleted_at IS NULL`, ids).Scan(&remaining); err != nil || remaining != len(ids) {
+		t.Fatalf("manual album deletion changed library media: count=%d error=%v", remaining, err)
+	}
+}
 
 func TestPostgresConcurrentImportsRespectStorageQuota(t *testing.T) {
 	store, ownerID, _ := momentTestStore(t, 0)

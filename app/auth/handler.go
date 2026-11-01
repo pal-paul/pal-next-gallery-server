@@ -138,6 +138,7 @@ func (handler *Service) Session(writer http.ResponseWriter, request *http.Reques
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"id": user.ID, "username": user.Username, "role": user.Role,
 		"uploadFolder": user.UploadFolder, "totpEnabled": user.TOTPSecret != "",
+		"applianceOwner": handler.applianceMode && user.Role == "admin",
 	})
 }
 

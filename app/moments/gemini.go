@@ -83,7 +83,7 @@ func (enricher *GeminiEnricher) Describe(ctx context.Context, candidate Candidat
 	description.Scene = strings.TrimSpace(description.Scene)
 	description.Weather = strings.TrimSpace(description.Weather)
 	if description.Description == "" {
-		return ImageDescription{}, fmt.Errorf("Gemini returned an empty image description")
+		return ImageDescription{}, fmt.Errorf("gemini returned an empty image description")
 	}
 	return description, nil
 }
@@ -230,7 +230,7 @@ func (enricher *GeminiEnricher) generate(ctx context.Context, model, prompt stri
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return "", fmt.Errorf("Gemini returned %s: %s", response.Status, strings.TrimSpace(string(message)))
+		return "", fmt.Errorf("gemini returned %s: %s", response.Status, strings.TrimSpace(string(message)))
 	}
 	var result struct {
 		Candidates []struct {
@@ -245,7 +245,7 @@ func (enricher *GeminiEnricher) generate(ctx context.Context, model, prompt stri
 		return "", fmt.Errorf("decode Gemini response: %w", err)
 	}
 	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 || strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text) == "" {
-		return "", fmt.Errorf("Gemini returned an empty response")
+		return "", fmt.Errorf("gemini returned an empty response")
 	}
 	return result.Candidates[0].Content.Parts[0].Text, nil
 }

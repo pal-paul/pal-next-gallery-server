@@ -42,6 +42,8 @@ type Media struct {
 }
 
 type MediaFilter struct {
+	Page
+	Favorites      bool
 	Search         string
 	Kind           string
 	Sort           string
@@ -67,9 +69,9 @@ type MediaPaths struct {
 }
 
 type Repository interface {
-	ListAlbums(context.Context, string, string) ([]Album, error)
+	ListAlbums(context.Context, string, string, ...Page) ([]Album, error)
 	CreateAlbum(context.Context, Album) error
-	GetAlbum(context.Context, string, string) (Album, error)
+	GetAlbum(context.Context, string, string, ...Page) (Album, error)
 	UpdateAlbum(context.Context, string, string, string, string) error
 	DeleteAlbum(context.Context, string, string) error
 	SetAlbumOrder(context.Context, string, []string) error

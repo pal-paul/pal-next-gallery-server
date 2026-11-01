@@ -182,9 +182,10 @@ prevent a stored cookie from being sent.
   multi-select picker containing active photos that are not already members.
 - Album title and description remain manually editable before and after an AI
   suggestion. Adding images and changing the cover are independent of Gemini.
-- Automatic albums are system-managed: metadata edits, deletion, manual
-  reordering, and membership changes are rejected. Cover selection remains
-  available.
+- Automatic albums allow owner title/description edits, optional AI suggestions,
+  cover selection, and album-only deletion. Reconciliation preserves metadata
+  and skips deleted owner/group-part keys; photos remain in the library. Manual
+  reordering and membership changes remain system-managed and rejected.
 
 ## Embedded pages
 
