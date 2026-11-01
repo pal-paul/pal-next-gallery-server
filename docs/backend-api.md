@@ -394,10 +394,11 @@ date has more than 15 uploads, reconciliation creates a daily album such as
 `October 5` and moves all uploads from that date out of the weekly album. Later
 unassigned uploads on that date go directly to the daily album.
 
-Responses mark these albums with `"automatic": true`. Their title, order,
-membership, and lifecycle are system-managed, so the manual update, delete,
-reorder, add, and remove operations return `404` for them. Users may still
-select an album cover. Manual Albums can be edited after creation, and the web
+Responses mark these albums with `"automatic": true`. Owners may edit their
+title and description and select a cover, with optional AI metadata suggestions
+when AI is enabled. Reconciliation preserves existing titles and descriptions.
+Ordering, membership, and lifecycle remain system-managed: delete, reorder,
+add, and remove operations return `404` for them. Manual Albums can be edited after creation, and the web
 application exposes a direct multi-image picker from the Album detail view.
 Adding or removing Album media never calls Gemini.
 

@@ -172,7 +172,7 @@ func reconcileAutomaticAlbumParts(ctx context.Context, transaction pgx.Tx, owner
 			(id, owner_id, title, description, automatic, auto_key)
 			VALUES ($1, $2, $3, '', TRUE, $4)
 			ON CONFLICT (owner_id, auto_key) WHERE auto_key IS NOT NULL
-			DO UPDATE SET title = EXCLUDED.title
+			DO UPDATE SET auto_key = EXCLUDED.auto_key
 			RETURNING id`, albumID, ownerID, title, key).Scan(&albumID); err != nil {
 			return err
 		}

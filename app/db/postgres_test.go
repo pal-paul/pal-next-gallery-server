@@ -106,6 +106,57 @@ func TestPostgresGalleryPagination(t *testing.T) {
 	}
 }
 
+func TestPostgresAutomaticAlbumMetadataAndCover(t *testing.T) {
+	store, ownerID, candidates := momentTestStore(t, 2)
+	ctx := context.Background()
+	album := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Generated title"}
+	if err := store.CreateAlbum(ctx, album); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{candidates[0].ID, candidates[1].ID}
+	if err := store.AddAlbumMedia(ctx, album.ID, ownerID, ids); err != nil {
+		t.Fatal(err)
+	}
+	key := "metadata-test"
+	if _, err := store.pool.Exec(ctx, `UPDATE albums SET automatic = TRUE, auto_key = $2 WHERE id = $1`, album.ID, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateAlbum(ctx, album.ID, uuid.NewString(), "Not owned", "Rejected"); err == nil {
+		t.Fatal("non-owner metadata update succeeded")
+	}
+	if err := store.UpdateAlbum(ctx, album.ID, ownerID, "My title", "My description"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAlbumCover(ctx, album.ID, ownerID, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAlbum(ctx, album.ID, ownerID); err == nil {
+		t.Fatal("automatic album deletion succeeded")
+	}
+	if err := store.RemoveAlbumMedia(ctx, album.ID, ownerID, ids[0]); err == nil {
+		t.Fatal("automatic membership removal succeeded")
+	}
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	if err := reconcileAutomaticAlbumParts(ctx, transaction, ownerID, key, "Generated replacement", album.ID, ids, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.GetAlbum(ctx, album.ID, ownerID, gallery.Page{Limit: 1})
+	if err != nil || detail.Title != "My title" || detail.Description != "My description" || detail.CoverMediaID != ids[1] || !detail.Automatic || detail.ItemCount != 2 {
+		t.Fatalf("automatic album metadata/cover changed: %+v error=%v", detail, err)
+	}
+	albums, err := store.ListAlbums(ctx, ownerID, "")
+	if err != nil || len(albums) != 1 || albums[0].CoverMediaID != detail.CoverMediaID {
+		t.Fatalf("list/detail cover mismatch: %+v error=%v", albums, err)
+	}
+}
+
 func TestPostgresConcurrentImportsRespectStorageQuota(t *testing.T) {
 	store, ownerID, _ := momentTestStore(t, 0)
 	ctx := context.Background()

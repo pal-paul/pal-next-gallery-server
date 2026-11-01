@@ -88,7 +88,7 @@ func (store *Postgres) GetAlbum(ctx context.Context, albumID, userID string, pag
 
 func (store *Postgres) UpdateAlbum(ctx context.Context, albumID, userID, title, description string) error {
 	result, err := store.pool.Exec(ctx, `UPDATE albums SET title = $3, description = $4
-		WHERE id = $1 AND owner_id = $2 AND automatic = FALSE`, albumID, userID, title, description)
+		WHERE id = $1 AND owner_id = $2`, albumID, userID, title, description)
 	return changed(result.RowsAffected(), err)
 }
 
