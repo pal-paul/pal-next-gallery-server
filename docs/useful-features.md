@@ -183,8 +183,9 @@ prevent a stored cookie from being sent.
 - Album title and description remain manually editable before and after an AI
   suggestion. Adding images and changing the cover are independent of Gemini.
 - Automatic albums allow owner title/description edits, optional AI suggestions,
-  and cover selection. Reconciliation preserves existing metadata. Deletion,
-  manual reordering, and membership changes remain system-managed and rejected.
+  cover selection, and album-only deletion. Reconciliation preserves metadata
+  and skips deleted owner/group-part keys; photos remain in the library. Manual
+  reordering and membership changes remain system-managed and rejected.
 
 ## Embedded pages
 

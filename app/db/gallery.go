@@ -93,9 +93,35 @@ func (store *Postgres) UpdateAlbum(ctx context.Context, albumID, userID, title, 
 }
 
 func (store *Postgres) DeleteAlbum(ctx context.Context, albumID, userID string) error {
-	result, err := store.pool.Exec(ctx, `DELETE FROM albums
-		WHERE id = $1 AND owner_id = $2 AND automatic = FALSE`, albumID, userID)
-	return changed(result.RowsAffected(), err)
+	transaction, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	var automatic bool
+	var key string
+	if err := transaction.QueryRow(ctx, `SELECT automatic, COALESCE(auto_key, '') FROM albums
+		WHERE id = $1 AND owner_id = $2`, albumID, userID).Scan(&automatic, &key); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return gallery.ErrNotFound
+		}
+		return err
+	}
+	if automatic && key != "" {
+		baseKey, _, _ := strings.Cut(key, ":part:")
+		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, userID+":"+baseKey); err != nil {
+			return err
+		}
+		if _, err := transaction.Exec(ctx, `INSERT INTO deleted_automatic_albums (owner_id, auto_key)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, key); err != nil {
+			return err
+		}
+	}
+	result, err := transaction.Exec(ctx, `DELETE FROM albums WHERE id = $1 AND owner_id = $2`, albumID, userID)
+	if err := changed(result.RowsAffected(), err); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }
 
 func (store *Postgres) SetAlbumOrder(ctx context.Context, userID string, albumIDs []string) error {

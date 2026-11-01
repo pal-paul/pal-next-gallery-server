@@ -107,7 +107,7 @@ func TestPostgresGalleryPagination(t *testing.T) {
 }
 
 func TestPostgresAutomaticAlbumMetadataAndCover(t *testing.T) {
-	store, ownerID, candidates := momentTestStore(t, 2)
+	store, ownerID, candidates := momentTestStore(t, 3)
 	ctx := context.Background()
 	album := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Generated title"}
 	if err := store.CreateAlbum(ctx, album); err != nil {
@@ -130,8 +130,8 @@ func TestPostgresAutomaticAlbumMetadataAndCover(t *testing.T) {
 	if err := store.SetAlbumCover(ctx, album.ID, ownerID, ids[1]); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteAlbum(ctx, album.ID, ownerID); err == nil {
-		t.Fatal("automatic album deletion succeeded")
+	if err := store.DeleteAlbum(ctx, album.ID, uuid.NewString()); err == nil {
+		t.Fatal("non-owner album deletion succeeded")
 	}
 	if err := store.RemoveAlbumMedia(ctx, album.ID, ownerID, ids[0]); err == nil {
 		t.Fatal("automatic membership removal succeeded")
@@ -154,6 +154,72 @@ func TestPostgresAutomaticAlbumMetadataAndCover(t *testing.T) {
 	albums, err := store.ListAlbums(ctx, ownerID, "")
 	if err != nil || len(albums) != 1 || albums[0].CoverMediaID != detail.CoverMediaID {
 		t.Fatalf("list/detail cover mismatch: %+v error=%v", albums, err)
+	}
+	if err := store.DeleteAlbum(ctx, album.ID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetAlbum(ctx, album.ID, ownerID); !errors.Is(err, gallery.ErrNotFound) {
+		t.Fatalf("deleted album remains accessible: %v", err)
+	}
+	transaction, err = store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+	if err := reconcileAutomaticAlbumParts(ctx, transaction, ownerID, key, "Generated replacement", uuid.NewString(), ids, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	albums, err = store.ListAlbums(ctx, ownerID, "")
+	if err != nil || len(albums) != 0 {
+		t.Fatalf("deleted automatic album returned: %+v error=%v", albums, err)
+	}
+	partIDs := []string{ids[0], ids[1], candidates[2].ID}
+	for attempt := 0; attempt < 2; attempt++ {
+		partitionTransaction, err := store.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = partitionTransaction.Rollback(ctx) }()
+		if err := reconcileAutomaticAlbumParts(ctx, partitionTransaction, ownerID, key, "Generated replacement", uuid.NewString(), partIDs, 2); err != nil {
+			t.Fatal(err)
+		}
+		if err := partitionTransaction.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		albums, err = store.ListAlbums(ctx, ownerID, "")
+		if err != nil || len(albums) != 1-attempt {
+			t.Fatalf("automatic part suppression failed: %+v error=%v", albums, err)
+		}
+		if attempt == 0 {
+			if albums[0].ItemCount != 1 {
+				t.Fatalf("unrelated automatic part changed: %+v", albums[0])
+			}
+			if err := store.DeleteAlbum(ctx, albums[0].ID, ownerID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var remaining int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM media_uploads WHERE upload_id = ANY($1)
+		AND deleted_at IS NULL`, ids).Scan(&remaining); err != nil || remaining != len(ids) {
+		t.Fatalf("album deletion changed library media: count=%d error=%v", remaining, err)
+	}
+	manual := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Manual album"}
+	if err := store.CreateAlbum(ctx, manual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddAlbumMedia(ctx, manual.ID, ownerID, ids); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAlbum(ctx, manual.ID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM media_uploads WHERE upload_id = ANY($1)
+		AND deleted_at IS NULL`, ids).Scan(&remaining); err != nil || remaining != len(ids) {
+		t.Fatalf("manual album deletion changed library media: count=%d error=%v", remaining, err)
 	}
 }
 

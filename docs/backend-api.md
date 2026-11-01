@@ -397,8 +397,10 @@ unassigned uploads on that date go directly to the daily album.
 Responses mark these albums with `"automatic": true`. Owners may edit their
 title and description and select a cover, with optional AI metadata suggestions
 when AI is enabled. Reconciliation preserves existing titles and descriptions.
-Ordering, membership, and lifecycle remain system-managed: delete, reorder,
-add, and remove operations return `404` for them. Manual Albums can be edited after creation, and the web
+Owners may delete either album type without deleting media. Deleted automatic
+group/part keys are suppressed per owner during reconciliation. Ordering and
+membership remain system-managed: reorder, add, and remove operations return
+`404` for automatic albums. Manual Albums can be edited after creation, and the web
 application exposes a direct multi-image picker from the Album detail view.
 Adding or removing Album media never calls Gemini.
 

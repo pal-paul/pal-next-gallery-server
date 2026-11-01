@@ -55,8 +55,10 @@ info:
     complete accessible library, including media received through library shares.
     Dates with more than 15 accessible active items are promoted to a daily album.
     The same media can therefore appear in automatic albums owned by its owner and
-    by each recipient. Automatic albums cannot be renamed, deleted, reordered, or
-    have membership changed manually.
+    by each recipient. Owners may edit metadata, choose covers, or delete either
+    album type without deleting media. Deleted automatic group/part keys are
+    suppressed per owner during reconciliation. Automatic albums cannot be
+    reordered or have membership changed manually.
 
     ## Moments
 
@@ -640,7 +642,7 @@ paths:
       tags: [Gallery]
       operationId: updateAlbum
       summary: Update an owned album
-      description: Updates the trimmed title and description of a manual album. Automatic albums are system-managed and cannot be updated.
+      description: Updates the trimmed title and description of an owned manual or automatic album. Automatic reconciliation preserves existing metadata.
       requestBody:
         required: true
         content:
@@ -658,7 +660,7 @@ paths:
       tags: [Gallery]
       operationId: deleteAlbum
       summary: Delete an owned album without deleting its media
-      description: Deletes a manual album and its membership links. Media files and media records are not deleted. Automatic albums cannot be deleted.
+      description: Deletes an owned manual or automatic album and its membership links without deleting media files or records. Deleted automatic group/part keys are suppressed per owner during reconciliation; sibling parts are unaffected.
       responses:
         "204":
           description: Album deleted.

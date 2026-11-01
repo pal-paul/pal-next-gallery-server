@@ -239,6 +239,11 @@ ALTER TABLE albums ADD COLUMN IF NOT EXISTS position INTEGER;
 ALTER TABLE albums ADD COLUMN IF NOT EXISTS cover_media_id TEXT REFERENCES media_uploads(upload_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS albums_owner_position_idx ON albums(owner_id, position, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS albums_owner_auto_key_idx ON albums(owner_id, auto_key) WHERE auto_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS deleted_automatic_albums (
+	owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	auto_key TEXT NOT NULL,
+	PRIMARY KEY (owner_id, auto_key)
+);
 CREATE TABLE IF NOT EXISTS album_metadata_jobs (
 	id UUID PRIMARY KEY,
 	album_id UUID NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
