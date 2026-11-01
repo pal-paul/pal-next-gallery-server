@@ -144,6 +144,50 @@ func TestImportArchiveCanEnableMoments(t *testing.T) {
 	}
 }
 
+func TestImportHandlerPreservesApplianceRoleAndFolderBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, enabled := range []bool{false, true} {
+		for _, role := range []string{"user", "admin", "unknown"} {
+			for _, folder := range []string{"family/photos", "", " "} {
+				repository := newRecordingRepository()
+				base := t.TempDir()
+				service, err := New(repository, filepath.Join(base, "tmp"), filepath.Join(base, "media"), 1<<20, 1<<20, 0, WithApplianceMode(enabled))
+				if err != nil {
+					t.Fatal(err)
+				}
+				actor := auth.User{ID: "owner-" + role, Role: role, UploadFolder: folder}
+				response := performImportRequest(t, service, nil, actor)
+				allowed := (role == "user" || (enabled && role == "admin")) && strings.TrimSpace(folder) != ""
+				if !allowed {
+					if response.Code != http.StatusForbidden || len(repository.saved) != 0 {
+						t.Fatalf("forbidden import: appliance=%v role=%s folder=%q status=%d saved=%d", enabled, role, folder, response.Code, len(repository.saved))
+					}
+					entries, err := os.ReadDir(service.mediaDir)
+					if err != nil || len(entries) != 0 {
+						t.Fatalf("forbidden import wrote files: entries=%v error=%v", entries, err)
+					}
+					continue
+				}
+				if response.Code != http.StatusCreated || len(repository.saved) != 1 {
+					t.Fatalf("allowed import: appliance=%v role=%s status=%d saved=%d body=%s", enabled, role, response.Code, len(repository.saved), response.Body.String())
+				}
+				var result Result
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Imported != 1 {
+					t.Fatalf("import result: %+v error=%v", result, err)
+				}
+				media := repository.saved[0]
+				if media.OwnerID != actor.ID || !strings.HasPrefix(media.MediaPath, folder+"/") {
+					t.Fatalf("wrong owner or upload folder: %+v", media)
+				}
+				data, err := os.ReadFile(filepath.Join(service.mediaDir, filepath.FromSlash(media.MediaPath)))
+				if err != nil || string(data) != "photo" {
+					t.Fatalf("completed import file: data=%q error=%v", data, err)
+				}
+			}
+		}
+	}
+}
+
 func TestImportHandlerDefaultsMomentsToEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repository := newRecordingRepository()
@@ -273,15 +317,15 @@ func TestImportCleansUpWhenDiskSpaceDropsDuringExtraction(t *testing.T) {
 	}
 }
 
-func performImportRequest(t *testing.T, service *Service, momentsEnabled *bool) *httptest.ResponseRecorder {
+func performImportRequest(t *testing.T, service *Service, momentsEnabled *bool, actors ...auth.User) *httptest.ResponseRecorder {
 	t.Helper()
 	archiveBytes := testArchiveBytes(t, map[string][]byte{
 		"Takeout/Google Photos/Photos from 2025/photo.jpg": []byte("photo"),
 	})
-	return performArchiveRequest(t, service, archiveBytes, momentsEnabled)
+	return performArchiveRequest(t, service, archiveBytes, momentsEnabled, actors...)
 }
 
-func performArchiveRequest(t *testing.T, service *Service, archiveBytes []byte, momentsEnabled *bool) *httptest.ResponseRecorder {
+func performArchiveRequest(t *testing.T, service *Service, archiveBytes []byte, momentsEnabled *bool, actors ...auth.User) *httptest.ResponseRecorder {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -301,17 +345,21 @@ func performArchiveRequest(t *testing.T, service *Service, archiveBytes []byte, 
 		t.Fatal(err)
 	}
 
-	return performMultipartImportRequest(t, service, writer.FormDataContentType(), &body)
+	return performMultipartImportRequest(t, service, writer.FormDataContentType(), &body, actors...)
 }
 
-func performMultipartImportRequest(t *testing.T, service *Service, contentType string, body io.Reader) *httptest.ResponseRecorder {
+func performMultipartImportRequest(t *testing.T, service *Service, contentType string, body io.Reader, actors ...auth.User) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/media/import/google-takeout", body)
 	request.Header.Set("Content-Type", contentType)
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	ctx.Request = request
-	ctx.Set(auth.UserContextKey, auth.User{ID: "user-1", Role: "user", UploadFolder: "alice"})
+	actor := auth.User{ID: "user-1", Role: "user", UploadFolder: "alice"}
+	if len(actors) > 0 {
+		actor = actors[0]
+	}
+	ctx.Set(auth.UserContextKey, actor)
 	service.Import(ctx)
 	entries, err := os.ReadDir(service.tmpDir)
 	if err != nil || len(entries) != 0 {

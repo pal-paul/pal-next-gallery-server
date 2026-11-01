@@ -331,7 +331,7 @@ for complete request and response schemas.
 | `GET`    | `/public/{token}/download`              | Public             | Download linked media or an album ZIP.                           |
 | `GET`    | `/media/export`                         | Regular user       | Export versioned media and album metadata.                       |
 | `POST`   | `/media/import`                         | Regular user       | Import manual albums for currently owned media.                  |
-| `POST`   | `/media/import/google-takeout`          | Regular user       | Import media and albums from one Google Takeout ZIP.             |
+| `POST`   | `/media/import/google-takeout`          | Photo user         | Import media and albums from one Google Takeout ZIP.             |
 
 `GET /media` supports `search`, `kind=photo|video`,
 `sort=newest|oldest|title`, `trash=true`, capture-time ranges, and GPS radius
@@ -339,7 +339,10 @@ search. A returned item's `shared` field is `true` when the current user is a
 recipient rather than its owner.
 
 Google Takeout import accepts `multipart/form-data` with an `archive` ZIP and
-an optional `momentsEnabled` boolean, which defaults to `true`. Submit each
+an optional `momentsEnabled` boolean, which defaults to `true`. Regular users
+are allowed; administrators are allowed only when `ENV_APPLIANCE_MODE=YES`.
+Both require a configured upload folder. Standalone administrators remain
+forbidden. Submit each
 ZIP from a split Takeout export separately. Imports preserve sidecar capture
 times, deduplicate by owner-scoped SHA-256, enqueue normal media processing,
 and idempotently recreate Google album folders as manual albums. Calendar

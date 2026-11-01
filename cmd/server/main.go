@@ -201,7 +201,8 @@ func run() error {
 	trashService := trash.New(database, envVar.MediaDir)
 	batchService := batch.New(database, uploaderService)
 	transferService := transfer.New(database)
-	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize, envVar.MinDiskFree)
+	takeoutImportService, err := takeoutimport.New(database, envVar.TmpDir, envVar.MediaDir, envVar.MaxUploadSize, envVar.MaxStorageSize, envVar.MinDiskFree,
+		takeoutimport.WithApplianceMode(applianceMode))
 	if err != nil {
 		return fmt.Errorf("create Google Takeout import service: %w", err)
 	}
