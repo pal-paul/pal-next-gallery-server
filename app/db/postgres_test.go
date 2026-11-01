@@ -18,12 +18,44 @@ import (
 	"pal-next-gallery-server/app/moments"
 	"pal-next-gallery-server/app/processing"
 	"pal-next-gallery-server/app/uploader"
+	userapp "pal-next-gallery-server/app/user"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestPostgresUploadFolderRoleBoundaries(t *testing.T) {
+	store, ownerID, _ := momentTestStore(t, 0)
+	ctx := context.Background()
+	for _, enabled := range []bool{false, true} {
+		for _, role := range []string{"user", "admin"} {
+			if _, err := store.pool.Exec(ctx, `UPDATE users SET role = $2, upload_folder = 'original' WHERE id = $1`, ownerID, role); err != nil {
+				t.Fatal(err)
+			}
+			service := userapp.NewService(store, "PAL Test", t.TempDir(), userapp.WithApplianceMode(enabled))
+			err := service.SetUploadFolder(ctx, ownerID, role, "family/photos")
+			allowed := role == "user" || enabled
+			expected := "original"
+			if allowed {
+				if err != nil {
+					t.Fatalf("allowed write: appliance=%v role=%s error=%v", enabled, role, err)
+				}
+				expected = "family/photos"
+			} else if !errors.Is(err, userapp.ErrForbidden) {
+				t.Fatalf("standalone admin write: %v", err)
+			}
+			var folder string
+			if err := store.pool.QueryRow(ctx, `SELECT upload_folder FROM users WHERE id = $1`, ownerID).Scan(&folder); err != nil || folder != expected {
+				t.Fatalf("persisted folder: appliance=%v role=%s got=%q want=%q error=%v", enabled, role, folder, expected, err)
+			}
+		}
+	}
+	if err := store.UpdateUserFolder(ctx, uuid.NewString(), "family/photos"); err == nil {
+		t.Fatal("missing user folder update succeeded")
+	}
+}
 
 func TestPostgresGalleryPagination(t *testing.T) {
 	store, ownerID, candidates := momentTestStore(t, 130)
