@@ -544,6 +544,8 @@ paths:
         position and then newest creation time. Automatic albums without a
         manual position therefore remain ordered by creation time.
       parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
         - name: search
           in: query
           description: Case-insensitive substring search across album title, description, and member filenames.
@@ -621,6 +623,10 @@ paths:
         Returns an album owned by the current user and its active media. Shared
         media disappears from this response when the owner removes the share or
         trashes the item. An album owned by another user is reported as `404`.
+        Pagination limits only `media`; `itemCount` remains the full accessible count.
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
           description: Album detail.
@@ -727,6 +733,9 @@ paths:
       tags: [Moments]
       operationId: listMoments
       summary: List the current user's moments
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
           description: Moments ordered newest first.
@@ -782,6 +791,10 @@ paths:
       tags: [Moments]
       operationId: getMoment
       summary: Get a moment and its photos
+      description: Pagination limits only `media`; `imageCount` remains the full accessible count.
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
       responses:
         "200":
           description: Moment detail.
@@ -923,6 +936,12 @@ paths:
         recipients never see an owner's trash. Favorite state is resolved for
         the requesting user, not globally.
       parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageOffset"
+        - name: favorites
+          in: query
+          description: When true, return only the requesting user's favorites, before pagination.
+          schema: { type: boolean, default: false }
         - name: search
           in: query
           description: Case-insensitive substring search over filename and MIME type.
@@ -1819,6 +1838,16 @@ components:
         administrator, and expires after 30 days. Browser cookies are HttpOnly,
         use path `/`, and are Secure whenever the request is HTTPS.
   parameters:
+    PageLimit:
+      name: limit
+      in: query
+      description: Optional page size. Omit both limit and offset for legacy unbounded responses. An offset requires a limit. Invalid paging returns 400.
+      schema: { type: integer, minimum: 1, maximum: 200 }
+    PageOffset:
+      name: offset
+      in: query
+      description: Number of matching records to skip after filtering and sorting. Requires limit. A page shorter than limit signals exhaustion.
+      schema: { type: integer, minimum: 0, default: 0 }
     UserID:
       name: id
       in: path
@@ -1976,7 +2005,10 @@ components:
           enum: [admin, user]
         uploadFolder:
           type: string
-          description: Relative upload destination for regular users; empty for administrators.
+          description: Relative upload destination; normally empty for administrators, except an appliance owner provisioned with a private folder.
+        applianceOwner:
+          type: boolean
+          description: True for administrators when opt-in appliance mode is enabled; permits the Photos frontend, not automatic access to device management.
         totpEnabled:
           type: boolean
           description: True when the account has an active TOTP secret.

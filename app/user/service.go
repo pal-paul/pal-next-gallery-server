@@ -75,13 +75,28 @@ func (service *Service) ResetPassword(ctx context.Context, actorRole, userID, pa
 }
 
 type Service struct {
-	repository Repository
-	issuer     string
-	mediaDir   string
+	repository    Repository
+	issuer        string
+	mediaDir      string
+	applianceMode bool
 }
 
-func NewService(repository Repository, issuer, mediaDir string) *Service {
-	return &Service{repository: repository, issuer: issuer, mediaDir: filepath.Clean(mediaDir)}
+type Option func(*Service)
+
+func WithApplianceMode(enabled bool) Option {
+	return func(service *Service) { service.applianceMode = enabled }
+}
+
+func NewService(repository Repository, issuer, mediaDir string, options ...Option) *Service {
+	service := &Service{repository: repository, issuer: issuer, mediaDir: filepath.Clean(mediaDir)}
+	for _, option := range options {
+		option(service)
+	}
+	return service
+}
+
+func (service *Service) canUsePhotos(role string) bool {
+	return role == "user" || (service.applianceMode && role == "admin")
 }
 
 func (service *Service) CreateAccount(ctx context.Context, actorRole, username, password, role, folder string) (Account, string, error) {
@@ -126,7 +141,7 @@ func (service *Service) CreateAccount(ctx context.Context, actorRole, username, 
 }
 
 func (service *Service) SetUploadFolder(ctx context.Context, userID, role, folder string) error {
-	if role != "user" {
+	if !service.canUsePhotos(role) {
 		return ErrForbidden
 	}
 	folder, err := sanitizeFolder(folder)

@@ -24,14 +24,14 @@ type testRepository struct {
 	deleteErr    error
 }
 
-func (repository *testRepository) ListAlbums(context.Context, string, string) ([]Album, error) {
+func (repository *testRepository) ListAlbums(context.Context, string, string, ...Page) ([]Album, error) {
 	return nil, nil
 }
 func (repository *testRepository) CreateAlbum(_ context.Context, album Album) error {
 	repository.createdAlbum = album
 	return nil
 }
-func (repository *testRepository) GetAlbum(context.Context, string, string) (Album, error) {
+func (repository *testRepository) GetAlbum(context.Context, string, string, ...Page) (Album, error) {
 	return repository.createdAlbum, nil
 }
 func (repository *testRepository) UpdateAlbum(context.Context, string, string, string, string) error {
@@ -180,6 +180,33 @@ func TestListMediaPreservesEqualCaptureBounds(t *testing.T) {
 	}
 	if repository.mediaFilter.CapturedAfter == nil || repository.mediaFilter.CapturedBefore == nil {
 		t.Fatalf("expected both capture bounds, got %#v", repository.mediaFilter)
+	}
+}
+
+func TestListMediaPagination(t *testing.T) {
+	for _, scenario := range []struct {
+		query         string
+		status        int
+		limit, offset int
+	}{
+		{"", 200, 0, 0},
+		{"?limit=60&offset=120&favorites=true&sort=oldest", 200, 60, 120},
+		{"?limit=0", 400, 0, 0},
+		{"?limit=201", 400, 0, 0},
+		{"?limit=60&offset=-1", 400, 0, 0},
+		{"?offset=1", 400, 0, 0},
+	} {
+		t.Run(scenario.query, func(t *testing.T) {
+			repository := &testRepository{}
+			response := httptest.NewRecorder()
+			testRouter(repository, t.TempDir()).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/media"+scenario.query, nil))
+			if response.Code != scenario.status || repository.mediaFilter.Limit != scenario.limit || repository.mediaFilter.Offset != scenario.offset {
+				t.Fatalf("status=%d filter=%+v", response.Code, repository.mediaFilter)
+			}
+			if scenario.limit > 0 && (!repository.mediaFilter.Favorites || repository.mediaFilter.Sort != "oldest") {
+				t.Fatal("lost query filters")
+			}
+		})
 	}
 }
 

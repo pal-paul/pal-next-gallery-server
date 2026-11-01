@@ -58,6 +58,26 @@ func TestCreateAdminRejectsInvalidBootstrap(t *testing.T) {
 	}
 }
 
+func TestApplianceOwnerReceivesPrivateUploadFolder(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		repository := &memoryRepository{}
+		service, err := NewService(repository, "bootstrap", "bootstrap-password", true, WithApplianceMode(enabled))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.CreateAdmin(context.Background(), "bootstrap", "bootstrap-password", "owner", "permanent-password", "permanent-password"); err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if enabled {
+			want = "users/" + repository.account.ID
+		}
+		if repository.account.UploadFolder != want {
+			t.Fatal("unexpected initial owner storage", enabled, repository.account.UploadFolder)
+		}
+	}
+}
+
 func TestSetupPageLifecycle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repository := &memoryRepository{}

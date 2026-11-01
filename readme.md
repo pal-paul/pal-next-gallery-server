@@ -93,6 +93,19 @@ Regular users can upload one or more photos or videos from the upload button in
 the gallery header. The browser sends large files through the resumable chunked
 upload API and refreshes the library after completion.
 
+For PAL appliance deployments only, set `ENV_APPLIANCE_MODE=YES` before first
+setup. The initial administrator receives a private `users/<account UUID>` upload
+folder; administrators may use Photos and the photo/upload APIs without changing
+their role. `/auth/session` returns `applianceOwner: true` for administrators in
+this mode, and Photos includes **Files and device** navigation to `/device/`.
+Deploy it behind PAL OS's shared-origin gateway. Only PAL OS's claimed owner may
+manage the device; additional Gallery accounts do not gain device access. TOTP
+requirements and administrator-only account management remain enforced.
+The default is `NO`, preserving standalone administrator redirects and regular-
+user-only photo permissions. Enabling the mode after setup does not retroactively
+assign upload folders to existing administrators. Build the frontend into the
+compatible image, and do not enable this integration on unrelated installations.
+
 For a local source build, run `npm ci && npm run build` in `web` before starting
 the Go server. `ENV_WEB_DIR` defaults to `./web/dist`; the container image builds
 and installs this directory automatically.

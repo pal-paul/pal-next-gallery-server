@@ -11,6 +11,7 @@ export type Session = {
   id: string
   username: string
   role: 'admin' | 'user'
+  applianceOwner?: boolean
 }
 
 export const authApi = {

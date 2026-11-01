@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"pal-next-gallery-server/app/auth"
+	"pal-next-gallery-server/app/gallery"
 	"pal-next-gallery-server/app/moments"
 	"pal-next-gallery-server/app/processing"
 	"pal-next-gallery-server/app/uploader"
@@ -23,6 +24,87 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestPostgresGalleryPagination(t *testing.T) {
+	store, ownerID, candidates := momentTestStore(t, 130)
+	ctx := context.Background()
+	all, err := store.ListMedia(ctx, ownerID, gallery.MediaFilter{})
+	if err != nil || len(all) != 130 {
+		t.Fatalf("legacy media: count=%d error=%v", len(all), err)
+	}
+	seen := make(map[string]bool)
+	for offset := 0; offset < 130; offset += 60 {
+		page, err := store.ListMedia(ctx, ownerID, gallery.MediaFilter{Page: gallery.Page{Limit: 60, Offset: offset}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for index, media := range page {
+			if seen[media.ID] || media.ID != all[offset+index].ID {
+				t.Fatalf("unstable page at %d: %s", offset+index, media.ID)
+			}
+			seen[media.ID] = true
+		}
+	}
+	if len(seen) != 130 {
+		t.Fatalf("loaded %d media", len(seen))
+	}
+	if err := store.SetFavorite(ctx, all[100].ID, ownerID, true); err != nil {
+		t.Fatal(err)
+	}
+	favorites, err := store.ListMedia(ctx, ownerID, gallery.MediaFilter{Favorites: true, Page: gallery.Page{Limit: 60}})
+	if err != nil || len(favorites) != 1 || favorites[0].ID != all[100].ID {
+		t.Fatalf("favorites: %+v error=%v", favorites, err)
+	}
+	album := gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: "Manual album"}
+	if err := store.CreateAlbum(ctx, album); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(candidates))
+	for index, candidate := range candidates {
+		ids[index] = candidate.ID
+	}
+	if err := store.AddAlbumMedia(ctx, album.ID, ownerID, ids); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.GetAlbum(ctx, album.ID, ownerID, gallery.Page{Limit: 60, Offset: 60})
+	if err != nil || detail.ItemCount != 130 || len(detail.Media) != 60 {
+		t.Fatalf("album detail: total=%d page=%d error=%v", detail.ItemCount, len(detail.Media), err)
+	}
+	for _, media := range detail.Media {
+		if media.ID != all[60].ID && !seen[media.ID] {
+			t.Fatalf("unexpected album media %s", media.ID)
+		}
+	}
+	for index := 0; index < 64; index++ {
+		if err := store.CreateAlbum(ctx, gallery.Album{ID: uuid.NewString(), OwnerID: ownerID, Title: fmt.Sprintf("Album %02d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	albums, err := store.ListAlbums(ctx, ownerID, "", gallery.Page{Limit: 60})
+	if err != nil || len(albums) != 60 {
+		t.Fatalf("album page: %d error=%v", len(albums), err)
+	}
+	albums, err = store.ListAlbums(ctx, ownerID, "", gallery.Page{Limit: 60, Offset: 60})
+	if err != nil || len(albums) != 5 {
+		t.Fatalf("last album page: %d error=%v", len(albums), err)
+	}
+	moment := moments.Moment{ID: uuid.NewString(), OwnerID: ownerID, Title: "Manual moment", Status: "published"}
+	if err := store.CreateMoment(ctx, moment, ids); err != nil {
+		t.Fatal(err)
+	}
+	momentDetail, err := store.GetMoment(ctx, moment.ID, ownerID, gallery.Page{Limit: 60, Offset: 60})
+	if err != nil || momentDetail.ImageCount != 130 || len(momentDetail.Media) != 60 {
+		t.Fatalf("moment detail: total=%d page=%d error=%v", momentDetail.ImageCount, len(momentDetail.Media), err)
+	}
+	items, err := store.ListMoments(ctx, ownerID, gallery.Page{Limit: 1})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("moment page: %d error=%v", len(items), err)
+	}
+	items, err = store.ListMoments(ctx, ownerID, gallery.Page{Limit: 1, Offset: 1})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("last moment page: %d error=%v", len(items), err)
+	}
+}
 
 func TestPostgresConcurrentImportsRespectStorageQuota(t *testing.T) {
 	store, ownerID, _ := momentTestStore(t, 0)

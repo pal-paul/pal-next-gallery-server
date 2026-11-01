@@ -32,6 +32,7 @@ func (clusterer *CommandClusterer) Cluster(ctx context.Context, candidates []Can
 	if err != nil {
 		return nil, fmt.Errorf("encode visual clustering request: %w", err)
 	}
+	// #nosec G204 -- executable is trusted server configuration, not request input; no shell is used.
 	command := exec.CommandContext(ctx, clusterer.executable)
 	command.Stdin = bytes.NewReader(payload)
 	var output bytes.Buffer
@@ -54,9 +55,8 @@ func restoreClusterResponse(candidates []Candidate, groups [][]Candidate) ([][]C
 		originals[candidate.ID] = candidate
 	}
 	seen := make(map[string]struct{}, len(candidates))
-	for groupIndex := range groups {
-		for candidateIndex := range groups[groupIndex] {
-			result := groups[groupIndex][candidateIndex]
+	for _, group := range groups {
+		for candidateIndex, result := range group {
 			original, ok := originals[result.ID]
 			if !ok {
 				return nil, fmt.Errorf("visual clustering worker returned unknown media ID %q", result.ID)
@@ -68,7 +68,7 @@ func restoreClusterResponse(candidates []Candidate, groups [][]Candidate) ([][]C
 			original.SimilarityScore = result.SimilarityScore
 			original.RepresentativeScore = result.RepresentativeScore
 			original.Representative = result.Representative
-			groups[groupIndex][candidateIndex] = original
+			group[candidateIndex] = original
 		}
 	}
 	if len(seen) != len(candidates) {

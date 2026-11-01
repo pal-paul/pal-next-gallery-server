@@ -50,8 +50,12 @@ func RegisterRoutes(router gin.IRoutes, service *Service) {
 }
 
 func (service *Service) ListAlbums(context *gin.Context) {
+	page, valid := ParsePage(context)
+	if !valid {
+		return
+	}
 	user := currentUser(context)
-	albums, err := service.repository.ListAlbums(context, user.ID, context.Query("search"))
+	albums, err := service.repository.ListAlbums(context, user.ID, context.Query("search"), page)
 	respond(context, albums, err)
 }
 
@@ -90,7 +94,11 @@ func (service *Service) SetAlbumOrder(context *gin.Context) {
 }
 
 func (service *Service) GetAlbum(context *gin.Context) {
-	album, err := service.repository.GetAlbum(context, context.Param("id"), currentUser(context).ID)
+	page, valid := ParsePage(context)
+	if !valid {
+		return
+	}
+	album, err := service.repository.GetAlbum(context, context.Param("id"), currentUser(context).ID, page)
 	respond(context, album, err)
 }
 
@@ -141,7 +149,11 @@ func (service *Service) SetAlbumCover(context *gin.Context) {
 }
 
 func (service *Service) ListMedia(context *gin.Context) {
-	filter := MediaFilter{Search: context.Query("search"), Kind: context.Query("kind"), Sort: context.Query("sort"), Trash: context.Query("trash") == "true"}
+	page, valid := ParsePage(context)
+	if !valid {
+		return
+	}
+	filter := MediaFilter{Page: page, Favorites: context.Query("favorites") == "true", Search: context.Query("search"), Kind: context.Query("kind"), Sort: context.Query("sort"), Trash: context.Query("trash") == "true"}
 	for _, bound := range []struct {
 		value  string
 		target **time.Time

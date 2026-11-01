@@ -94,6 +94,7 @@ type Service struct {
 	verifyAttempts     map[string]attemptState
 	lastAttemptCleanup time.Time
 	trustedProxies     []netip.Prefix
+	applianceMode      bool
 }
 
 type attemptState struct {
@@ -102,6 +103,10 @@ type attemptState struct {
 }
 
 type Option func(*Service)
+
+func WithApplianceMode(enabled bool) Option {
+	return func(service *Service) { service.applianceMode = enabled }
+}
 
 func WithTrustedProxies(prefixes []netip.Prefix) Option {
 	return func(service *Service) {

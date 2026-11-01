@@ -22,6 +22,28 @@ type memoryRepository struct {
 	unsharedUsername string
 }
 
+func TestAppliancePhotoAccessPreservesRoleBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, enabled := range []bool{false, true} {
+		service := NewService(&memoryRepository{}, "PAL Test", t.TempDir(), WithApplianceMode(enabled))
+		for _, actorRole := range []string{"user", "admin", "unknown"} {
+			for _, requiredRole := range []string{"user", "admin"} {
+				response := httptest.NewRecorder()
+				context, _ := gin.CreateTestContext(response)
+				context.Set(auth.UserContextKey, auth.User{ID: "owner-id", Role: actorRole})
+				service.RequireRole(requiredRole)(context)
+				allowed := actorRole == requiredRole || (enabled && actorRole == "admin" && requiredRole == "user")
+				if context.IsAborted() == allowed {
+					t.Fatalf("role guard: appliance=%v actor=%s required=%s", enabled, actorRole, requiredRole)
+				}
+			}
+		}
+		if err := service.SetUploadFolder(context.Background(), "owner-id", "admin", "../outside"); !errors.Is(err, ErrForbidden) && !errors.Is(err, ErrInvalidFolder) {
+			t.Fatal("unsafe owner upload folder accepted")
+		}
+	}
+}
+
 func (repository *memoryRepository) ResetUserPassword(_ context.Context, _ string, passwordHash string) error {
 	repository.passwordHash = passwordHash
 	return nil

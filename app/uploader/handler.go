@@ -21,7 +21,7 @@ import (
 )
 
 func (s *service) HandleCheckDuplicate(context *gin.Context) {
-	identity, ok := uploadUser(context)
+	identity, ok := s.uploadUser(context)
 	if !ok {
 		context.JSON(http.StatusForbidden, gin.H{"error": "uploads require a regular user with an upload folder"})
 		return
@@ -56,7 +56,7 @@ func (s *service) HandleCheckDuplicate(context *gin.Context) {
 }
 
 func (s *service) HandleCreateUpload(context *gin.Context) {
-	identity, ok := uploadUser(context)
+	identity, ok := s.uploadUser(context)
 	if !ok {
 		context.JSON(http.StatusForbidden, gin.H{"error": "uploads require a regular user with an upload folder"})
 		return
@@ -463,7 +463,7 @@ func (s *service) getSession(id string) (*uploadSession, bool) {
 }
 
 func (s *service) getOwnedSession(context *gin.Context, id string) (*uploadSession, bool) {
-	identity, ok := uploadUser(context)
+	identity, ok := s.uploadUser(context)
 	if !ok {
 		return nil, false
 	}
@@ -474,10 +474,10 @@ func (s *service) getOwnedSession(context *gin.Context, id string) (*uploadSessi
 	return session, true
 }
 
-func uploadUser(context *gin.Context) (auth.User, bool) {
+func (s *service) uploadUser(context *gin.Context) (auth.User, bool) {
 	value, exists := context.Get(auth.UserContextKey)
 	identity, ok := value.(auth.User)
-	return identity, exists && ok && identity.Role == "user" && identity.UploadFolder != ""
+	return identity, exists && ok && (identity.Role == "user" || (s.applianceMode && identity.Role == "admin")) && identity.UploadFolder != ""
 }
 
 func sanitizeFilename(filename string) (string, error) {

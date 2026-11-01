@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"pal-next-gallery-server/app/auth"
+	"pal-next-gallery-server/app/gallery"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -71,8 +72,8 @@ type Candidate struct {
 
 type Repository interface {
 	ListMomentOwners(context.Context) ([]string, error)
-	ListMoments(context.Context, string) ([]Moment, error)
-	GetMoment(context.Context, string, string) (Moment, error)
+	ListMoments(context.Context, string, ...gallery.Page) ([]Moment, error)
+	GetMoment(context.Context, string, string, ...gallery.Page) (Moment, error)
 	UpdateMoment(context.Context, string, string, string, string, string) error
 	DeleteMoment(context.Context, string, string) error
 	AddMomentMedia(context.Context, string, string, []string) error
@@ -176,12 +177,20 @@ func uniqueMediaIDs(mediaIDs []string) []string {
 }
 
 func (service *Service) List(ctx *gin.Context) {
-	items, err := service.repository.ListMoments(ctx, currentUser(ctx).ID)
+	page, valid := gallery.ParsePage(ctx)
+	if !valid {
+		return
+	}
+	items, err := service.repository.ListMoments(ctx, currentUser(ctx).ID, page)
 	respond(ctx, items, err)
 }
 
 func (service *Service) Get(ctx *gin.Context) {
-	item, err := service.repository.GetMoment(ctx, ctx.Param("id"), currentUser(ctx).ID)
+	page, valid := gallery.ParsePage(ctx)
+	if !valid {
+		return
+	}
+	item, err := service.repository.GetMoment(ctx, ctx.Param("id"), currentUser(ctx).ID, page)
 	respond(ctx, item, err)
 }
 

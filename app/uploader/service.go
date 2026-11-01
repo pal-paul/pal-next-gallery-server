@@ -21,6 +21,7 @@ type service struct {
 	maxStorageSize int64
 	minDiskFree    int64
 	maxActive      int
+	applianceMode  bool
 	diskFree       func(string) (int64, error)
 	mediaStore     UploadRepository
 	uploads        map[string]*uploadSession
@@ -39,6 +40,13 @@ type IUploaderService interface {
 }
 
 type Option func(*service) error
+
+func WithApplianceMode(enabled bool) Option {
+	return func(service *service) error {
+		service.applianceMode = enabled
+		return nil
+	}
+}
 
 func WithMaxUploadSize(size int64) Option {
 	return func(service *service) error {

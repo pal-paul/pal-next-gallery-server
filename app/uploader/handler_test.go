@@ -698,6 +698,42 @@ func TestCompleteUploadReportsStorageQuota(t *testing.T) {
 	}
 }
 
+func TestApplianceUploadRoleBoundaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name      string
+		appliance bool
+		role      string
+		folder    string
+		status    int
+	}{
+		{"regular", false, "user", "users/test", http.StatusCreated},
+		{"standalone-admin", false, "admin", "users/test", http.StatusForbidden},
+		{"appliance-admin", true, "admin", "users/test", http.StatusCreated},
+		{"appliance-regular", true, "user", "users/test", http.StatusCreated},
+		{"missing-folder", true, "admin", "", http.StatusForbidden},
+		{"unknown-role", true, "guest", "users/test", http.StatusForbidden},
+		{"missing-role", true, "", "users/test", http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			uploader := newTestService(t, filepath.Join(root, "tmp"), filepath.Join(root, "media"), 1024, WithApplianceMode(test.appliance))
+			engine := gin.New()
+			engine.Use(func(context *gin.Context) {
+				context.Set(auth.UserContextKey, auth.User{ID: "11111111-1111-1111-1111-111111111111", Role: test.role, UploadFolder: test.folder})
+			})
+			router, err := SetupRouter(engine, uploader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := performRequest(router, http.MethodPost, "/media/upload", strings.NewReader(`{"filename":"photo.jpg","size":4,"mime_type":"image/jpeg"}`))
+			if response.Code != test.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func newTestService(t *testing.T, tmpDir string, mediaDir string, maxUploadSize int64, options ...Option) IUploaderService {
 	t.Helper()
 	options = append([]Option{WithMaxUploadSize(maxUploadSize)}, options...)
